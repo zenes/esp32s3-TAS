@@ -204,7 +204,7 @@ void setup() {
 #else
   // For ESP32-S3 with W5500 SPI Ethernet
   if (!ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN,
-                 SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN)) {
+                 SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 40)) {
     Serial.println("ETH start Failed!");
     Serial.println(
         "WiFi AP is running, but internet sharing is not available.");

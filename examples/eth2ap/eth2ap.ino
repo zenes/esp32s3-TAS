@@ -18,6 +18,36 @@
 #endif
 #include "utilities.h" //Board PinMap
 #include <WiFi.h>
+#include <esp_wifi.h> // For esp_wifi_set_bandwidth
+#include <esp_system.h> // For esp_reset_reason
+#include <rom/rtc.h>    // For rtc_get_reset_reason
+#include <TFT_eSPI.h> // LCD Library
+#include <lvgl.h>    // LVGL Graphic Library
+
+TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
+#define ENABLE_LCD // Enable logic, but will be checked dynamically
+static bool lcd_initialized = false;
+static bool lcd_detected = false;
+
+/* LVGL Buffer */
+static lv_disp_draw_buf_t draw_buf;
+static lv_color_t buf[LCD_WIDTH * 20];
+
+/* UI Objects */
+static lv_obj_t *ui_label_eth;
+static lv_obj_t *ui_label_ap;
+static lv_obj_t *ui_label_clients;
+
+/* Display flushing callback */
+void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
+  uint32_t w = (area->x2 - area->x1 + 1);
+  uint32_t h = (area->y2 - area->y1 + 1);
+  tft.startWrite();
+  tft.setAddrWindow(area->x1, area->y1, w, h);
+  tft.pushColors((uint16_t *)&color_p->full, w * h, true);
+  tft.endWrite();
+  lv_disp_flush_ready(disp);
+}
 
 // WiFi AP Configuration
 #define AP_SSID "eth2ap"
@@ -45,6 +75,117 @@ IPAddress dns2(8, 8, 4, 4);
 // Network state
 static bool eth_connected = false;
 static bool ap_started = false;
+
+/**
+ * @brief Dynamic LCD hardware detection
+ * @return true if LCD is detected, false otherwise
+ */
+bool detectLCD() {
+  Serial.print("Probing LCD hardware... ");
+  // Use a local SPI instance to probe without affecting global state
+  SPIClass spi_probe(FSPI); // FSPI is SPI2_HOST on S3
+  spi_probe.begin(LCD_SCLK_PIN, LCD_MISO_PIN, LCD_MOSI_PIN, LCD_CS_PIN);
+  
+  pinMode(LCD_CS_PIN, OUTPUT);
+  digitalWrite(LCD_CS_PIN, LOW);
+  
+  // Try to Read Display ID (0x04)
+  // ST7789/ILI9341 ID: dummy, then ID1, ID2, ID3
+  spi_probe.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+  spi_probe.transfer(0x04);
+  spi_probe.transfer(0x00); // dummy
+  uint8_t id1 = spi_probe.transfer(0x00);
+  uint8_t id2 = spi_probe.transfer(0x00);
+  uint8_t id3 = spi_probe.transfer(0x00);
+  spi_probe.endTransaction();
+  
+  digitalWrite(LCD_CS_PIN, HIGH);
+  spi_probe.end(); 
+
+  Serial.printf("ID: %02X %02X %02X -> ", id1, id2, id3);
+  
+  // Floating PINs usually return 0xFF or 0x00
+  if ((id1 == 0xFF || id1 == 0x00) && (id2 == 0xFF || id2 == 0x00)) {
+    Serial.println("Not Found.");
+    return false;
+  }
+  Serial.println("Found!");
+  return true;
+}
+
+/**
+ * @brief Initialize LVGL UI widgets
+ */
+void initLVGLUI() {
+  lv_obj_t *scr = lv_scr_act();
+  lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+
+  /* Title */
+  lv_obj_t *title = lv_label_create(scr);
+  lv_label_set_text(title, "ETH2AP Bridge");
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_YELLOW), 0);
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+  /* Separator */
+  static lv_point_t line_points[] = {{0, 0}, {LCD_HEIGHT, 0}}; // Landscape orientation
+  lv_obj_t *line = lv_line_create(scr);
+  lv_line_set_points(line, line_points, 2);
+  lv_obj_set_style_line_color(line, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_set_style_line_width(line, 2, 0);
+  lv_obj_align(line, LV_ALIGN_TOP_MID, 0, 35);
+
+  /* Ethernet Label */
+  ui_label_eth = lv_label_create(scr);
+  lv_label_set_recolor(ui_label_eth, true);
+  lv_obj_set_style_text_color(ui_label_eth, lv_color_white(), 0);
+  lv_obj_align(ui_label_eth, LV_ALIGN_TOP_LEFT, 10, 50);
+
+  /* Access Point Label */
+  ui_label_ap = lv_label_create(scr);
+  lv_label_set_recolor(ui_label_ap, true);
+  lv_obj_set_style_text_color(ui_label_ap, lv_color_white(), 0);
+  lv_obj_align(ui_label_ap, LV_ALIGN_TOP_LEFT, 10, 80);
+
+  /* Clients Info */
+  ui_label_clients = lv_label_create(scr);
+  lv_obj_set_style_text_color(ui_label_clients, lv_palette_lighten(LV_PALETTE_GREY, 1), 0);
+  lv_obj_align(ui_label_clients, LV_ALIGN_TOP_LEFT, 10, 110);
+}
+
+/**
+ * @brief Update LCD with current network status (LVGL version)
+ */
+void updateLCD() {
+#ifdef ENABLE_LCD
+  if (!lcd_initialized) {
+    return;
+  }
+
+  // Update Ethernet Status Label
+  if (eth_connected) {
+    char buf_eth[64];
+    snprintf(buf_eth, sizeof(buf_eth), "ETH: #00FF00 Connected#\n IP: %s", ETH.localIP().toString().c_str());
+    lv_label_set_text(ui_label_eth, buf_eth);
+  } else {
+    lv_label_set_text(ui_label_eth, "ETH: #FF0000 Disconnected#");
+  }
+
+  // Update AP Status Label
+  if (ap_started) {
+    char buf_ap[64];
+    snprintf(buf_ap, sizeof(buf_ap), "AP: #00FF00 Running#\n SSID: %s", AP_SSID);
+    lv_label_set_text(ui_label_ap, buf_ap);
+
+    char buf_clients[32];
+    snprintf(buf_clients, sizeof(buf_clients), "Clients: %d / %d", WiFi.softAPgetStationNum(), AP_MAX_CONN);
+    lv_label_set_text(ui_label_clients, buf_clients);
+  } else {
+    lv_label_set_text(ui_label_ap, "AP: #FF0000 Stopped#");
+    lv_label_set_text(ui_label_clients, "");
+  }
+#endif
+}
 
 /**
  * @brief WiFi and Ethernet event handler
@@ -89,6 +230,10 @@ void NetworkEvent(arduino_event_id_t event) {
     // Start WiFi AP if not already started (it should be started in setup)
     if (!ap_started) {
       Serial.println("Starting WiFi AP...");
+
+      // Set WiFi Bandwidth to HT40 for higher throughput
+      esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT40);
+
       WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, 0, AP_MAX_CONN);
       ap_started = true;
     }
@@ -158,39 +303,94 @@ void NetworkEvent(arduino_event_id_t event) {
   default:
     break;
   }
+  // Update LCD on any major network event
+  updateLCD();
 }
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial) {
-    delay(10);
-  }
+  delay(1000); // Wait for Serial to stabilize
 
-  Serial.println("\n\n===== eth2ap Bridge Example =====");
+  esp_reset_reason_t reason = esp_reset_reason();
+  Serial.printf("\n\n[System] Reset Reason: %d\n", reason);
+
+  Serial.println("===== eth2ap Bridge Example =====");
   Serial.println("Ethernet to WiFi AP Bridge using NAPT");
   Serial.println("=====================================\n");
 
-  // Register event handler for both WiFi and Ethernet events
-  WiFi.onEvent(NetworkEvent);
+  // Step 1: Start WiFi AP immediately (Always-On Priority)
+  Serial.print("Step 1: Starting WiFi AP (softAP)... ");
+  if (WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, 0, AP_MAX_CONN)) {
+    Serial.println("Success.");
+  } else {
+    Serial.println("FAILED.");
+  }
 
-  // Start WiFi AP immediately (always visible)
-  Serial.println("Starting WiFi AP...");
-  WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, 0, AP_MAX_CONN);
-  Serial.println("WiFi AP Started!");
-  Serial.print("  SSID: ");
-  Serial.println(AP_SSID);
-  Serial.print("  Password: ");
-  Serial.println(AP_PASSWORD);
-  Serial.print("  IP Address: ");
-  Serial.println(WiFi.softAPIP());
+  Serial.print("Step 2: Setting WiFi Bandwidth to HT40... ");
+  esp_err_t err = esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT40);
+  if (err == ESP_OK) {
+    Serial.println("Success.");
+  } else {
+    Serial.printf("FAILED (err: %d).\n", err);
+  }
+
+  Serial.print("Step 3: Checking AP Status... ");
   ap_started = true;
+  Serial.print("SSID: ");
+  Serial.print(AP_SSID);
+  Serial.print(", IP: ");
+  Serial.println(WiFi.softAPIP());
+
+  // Step 4: Setting up WiFi events
+  Serial.print("Step 4: Registering Network Events... ");
+  WiFi.onEvent(NetworkEvent);
+  Serial.println("Done.");
 
   Serial.println("\n[Note] WiFi AP is running.");
-  Serial.println(
-      "       Internet access will be available after Ethernet connection.\n");
+  Serial.println("       Internet access will be available after Ethernet connection.\n");
 
-  // Initialize Ethernet for T-ETH-Lite-ESP32S3 (W5500 via SPI)
-  Serial.println("Initializing Ethernet...");
+  // Step 5: Initialize LCD (Dynamically detected)
+#ifdef ENABLE_LCD
+  lcd_detected = detectLCD();
+  if (lcd_detected) {
+    Serial.print("Step 5: Initializing LCD Pins... ");
+    pinMode(LCD_BL_PIN, OUTPUT);
+    digitalWrite(LCD_BL_PIN, HIGH); // Turn on backlight
+    Serial.println("Done.");
+
+    Serial.print("Step 6: tft.init() and LVGL Setup... ");
+    tft.init();
+    
+    /* Initialize LVGL */
+    lv_init();
+    lv_disp_draw_buf_init(&draw_buf, buf, NULL, LCD_WIDTH * 20);
+
+    /* Initialize the display driver for LVGL */
+    static lv_disp_drv_t disp_drv;
+    lv_disp_drv_init(&disp_drv);
+    disp_drv.hor_res = LCD_HEIGHT; // Landscape
+    disp_drv.ver_res = LCD_WIDTH;  // Landscape
+    disp_drv.flush_cb = my_disp_flush;
+    disp_drv.draw_buf = &draw_buf;
+    lv_disp_drv_register(&disp_drv);
+
+    lcd_initialized = true; 
+    Serial.println("Done.");
+
+    Serial.print("Step 7: LVGL UI creation... ");
+    tft.setRotation(1); // Landscape
+    initLVGLUI();
+    updateLCD();
+    Serial.println("Done.");
+  } else {
+    Serial.println("Step 5-7: LCD Hardware not found. Skipping.");
+  }
+#else
+  Serial.println("Step 5-7: LCD Feature Disabled.");
+#endif
+
+  // Step 8: Initialize Ethernet
+  Serial.println("Step 8: Initializing Ethernet...");
 
 #if CONFIG_IDF_TARGET_ESP32
   // For ESP32 with internal Ethernet (LAN8720, RTL8201, etc.)
@@ -203,6 +403,7 @@ void setup() {
   }
 #else
   // For ESP32-S3 with W5500 SPI Ethernet
+  // Increase SPI frequency to 80MHz (Max supported) for maximum throughput
   if (!ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN,
                  SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 40)) {
     Serial.println("ETH start Failed!");
@@ -254,7 +455,13 @@ void loop() {
       Serial.println(WiFi.softAPgetStationNum());
     }
     Serial.println("------------------\n");
+
+    // Update LCD periodically
+    updateLCD();
   }
 
-  delay(100);
+  // Update LVGL timer handler
+  lv_timer_handler();
+
+  delay(5);
 }

@@ -90,6 +90,19 @@
 #define SD_SCLK_PIN 7
 #define SD_CS_PIN 42
 
+// LCD Resolution
+#define LCD_WIDTH 240
+#define LCD_HEIGHT 320
+
+// LCD SPI2 (FSPI) Pins
+#define LCD_MISO_PIN 1
+#define LCD_MOSI_PIN 3
+#define LCD_SCLK_PIN 2
+#define LCD_CS_PIN 4
+#define LCD_DC_PIN 8
+#define LCD_RST_PIN 15
+#define LCD_BL_PIN 16
+
 #define IR_FILTER_NUM 46
 #elif defined(LILYGO_T_ETH_ELITE_ESP32S3)
 

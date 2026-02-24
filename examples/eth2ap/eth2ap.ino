@@ -18,11 +18,298 @@
 #endif
 #include "utilities.h" //Board PinMap
 #include <WiFi.h>
+#include <ESP32Ping.h>
+#include <SPI.h>
 #include <esp_wifi.h> // For esp_wifi_set_bandwidth
 #include <esp_system.h> // For esp_reset_reason
 #include <rom/rtc.h>    // For rtc_get_reset_reason
 #include <TFT_eSPI.h> // LCD Library
 #include <lvgl.h>    // LVGL Graphic Library
+#include <stdarg.h>  // For va_list
+#include <Preferences.h> // For NVS storage
+#include <esp_netif.h>   // For network statistics
+#include <esp_netif_net_stack.h>
+#include <lwip/netif.h>
+#include <lwip/prot/ip.h>
+#include <lwip/prot/ip4.h>
+#include <lwip/prot/udp.h>
+#include <lwip/prot/tcp.h>
+#include <lwip/apps/lwiperf.h>
+#include <AsyncUDP.h>
+#include <inttypes.h>
+
+// Global Traffic Stats
+struct InterfaceStats {
+    uint64_t rx_bytes = 0;
+    uint64_t tx_bytes = 0;
+    uint32_t rx_packets = 0;
+    uint32_t tx_packets = 0;
+};
+
+// Log System Configuration
+enum LogLevel { LOG_NONE = 0, LOG_ERROR, LOG_WARN, LOG_INFO, LOG_DEBUG };
+static LogLevel current_log_level = LOG_INFO;
+
+// Dmesg Ring Buffer
+#define DMESG_MAX_LINES 50
+#define DMESG_MAX_LEN 128
+
+struct DmesgEntry {
+    unsigned long timestamp;
+    LogLevel level;
+    char message[DMESG_MAX_LEN];
+};
+
+static DmesgEntry dmesg_buffer[DMESG_MAX_LINES];
+static int dmesg_head = 0;
+static int dmesg_tail = 0;
+static int dmesg_count = 0;
+
+void addDmesg(LogLevel level, const char* msg) {
+    dmesg_buffer[dmesg_head].timestamp = millis();
+    dmesg_buffer[dmesg_head].level = level;
+    strncpy(dmesg_buffer[dmesg_head].message, msg, DMESG_MAX_LEN - 1);
+    dmesg_buffer[dmesg_head].message[DMESG_MAX_LEN - 1] = '\0';
+    
+    dmesg_head = (dmesg_head + 1) % DMESG_MAX_LINES;
+    if (dmesg_count < DMESG_MAX_LINES) {
+        dmesg_count++;
+    } else {
+        dmesg_tail = (dmesg_tail + 1) % DMESG_MAX_LINES;
+    }
+}
+
+void logMsg(LogLevel level, const char* format, ...) {
+  char buf[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  
+  // Always add to dmesg buffer
+  addDmesg(level, buf);
+
+  if (level <= current_log_level) {
+    switch(level) {
+      case LOG_ERROR: Serial.print("[ERROR] "); break;
+      case LOG_WARN:  Serial.print("[WARN ] "); break;
+      case LOG_INFO:  Serial.print("[INFO ] "); break;
+      case LOG_DEBUG: Serial.print("[DEBUG] "); break;
+      default: break;
+    }
+    Serial.print(buf);
+    Serial.print("\r\n");
+  }
+}
+
+// Interface instances
+
+
+InterfaceStats eth_stats;
+InterfaceStats ap_stats;
+bool traffic_log_enabled = false;
+
+// Hook Function types
+typedef err_t (*netif_input_fn)(struct pbuf *p, struct netif *inp);
+typedef err_t (*netif_linkoutput_fn)(struct netif *netif, struct pbuf *p);
+
+netif_input_fn orig_eth_input = NULL;
+netif_linkoutput_fn orig_eth_linkoutput = NULL;
+netif_input_fn orig_ap_input = NULL;
+netif_linkoutput_fn orig_ap_linkoutput = NULL;
+
+void logPacket(const char* iface, bool rx, struct pbuf* p) {
+    if (!traffic_log_enabled) return;
+    
+    uint8_t *payload = (uint8_t *)p->payload;
+    struct ip_hdr *iphdr = NULL;
+
+    // Detection logic:
+    // 1. Direct IPv4 (ihl and version)
+    if (p->len >= 20 && (payload[0] & 0xF0) == 0x40) {
+        iphdr = (struct ip_hdr *)payload;
+    }
+    // 2. Ethernet Encapsulated IPv4 (EtherType 0x0800 at offset 12)
+    else if (p->len >= 34 && payload[12] == 0x08 && payload[13] == 0x00 && (payload[14] & 0xF0) == 0x40) {
+        iphdr = (struct ip_hdr *)(payload + 14);
+    }
+
+    if (iphdr) {
+        char src_ip[16], dst_ip[16];
+        ip4addr_ntoa_r((const ip4_addr_t*)&(iphdr->src), src_ip, sizeof(src_ip));
+        ip4addr_ntoa_r((const ip4_addr_t*)&(iphdr->dest), dst_ip, sizeof(dst_ip));
+        
+        const char* proto = "OTHER";
+        uint8_t p_type = IPH_PROTO(iphdr);
+        if (p_type == IP_PROTO_ICMP) proto = "ICMP";
+        else if (p_type == IP_PROTO_TCP) proto = "TCP";
+        else if (p_type == IP_PROTO_UDP) proto = "UDP";
+        
+        Serial.printf("[%s %s] %s -> %s (%s, %d bytes)\r\n", 
+                      iface, rx ? "RX" : "TX", src_ip, dst_ip, proto, p->tot_len);
+    }
+}
+
+// Helper to print 64-bit values accurately
+String formatBytes(uint64_t bytes) {
+    if (bytes < 1024) return String((unsigned long)bytes) + " B";
+    else if (bytes < 1024 * 1024) return String((unsigned long)(bytes / 1024)) + " KB";
+    else return String((unsigned long)(bytes / (1024 * 1024))) + " MB";
+}
+
+err_t eth_input_hook(struct pbuf *p, struct netif *inp) {
+    eth_stats.rx_bytes += p->tot_len;
+    eth_stats.rx_packets++;
+    logPacket("ETH", true, p);
+    return orig_eth_input(p, inp);
+}
+
+err_t eth_linkoutput_hook(struct netif *netif, struct pbuf *p) {
+    eth_stats.tx_bytes += p->tot_len;
+    eth_stats.tx_packets++;
+    logPacket("ETH", false, p);
+    return orig_eth_linkoutput(netif, p);
+}
+
+err_t ap_input_hook(struct pbuf *p, struct netif *inp) {
+    ap_stats.rx_bytes += p->tot_len;
+    ap_stats.rx_packets++;
+    logPacket("AP ", true, p);
+    return orig_ap_input(p, inp);
+}
+
+err_t ap_linkoutput_hook(struct netif *netif, struct pbuf *p) {
+    ap_stats.tx_bytes += p->tot_len;
+    ap_stats.tx_packets++;
+    logPacket("AP ", false, p);
+    return orig_ap_linkoutput(netif, p);
+}
+
+
+// WiFi AP Configuration - Base values
+#define AP_SSID_BASE "eth2ap"
+#define AP_PASSWORD_BASE "12345678"
+#define AP_CHANNEL 1
+#define AP_MAX_CONN 4
+
+// Log System moved up
+
+// Shell Configuration
+static String inputString = "";
+static bool stringComplete = false;
+static String ap_ssid_custom = AP_SSID_BASE;
+static String ap_pw_custom = AP_PASSWORD_BASE;
+
+Preferences preferences;
+
+// Traffic Monitoring State
+static uint32_t last_eth_rx = 0;
+static uint32_t last_eth_tx = 0;
+static uint32_t last_ap_rx = 0;
+static uint32_t last_ap_tx = 0;
+static unsigned long last_speed_check = 0;
+// Shell & Monitoring Configuration
+static bool monitor_traffic = false;
+static bool monitor_enabled = false;
+static int cursor_pos = 0;
+
+// iPerf State
+static void* lwiperf_session = NULL;
+static void lwiperf_report(void* arg, enum lwiperf_report_type report_type,
+                           const ip_addr_t* local_addr, u16_t local_port, const ip_addr_t* remote_addr, u16_t remote_port,
+                           u32_t bytes_transferred, u32_t ms_duration, u32_t bandwidth_kbitpsec) {
+    
+    float mbps = bandwidth_kbitpsec / 1000.0;
+    float mb_s = mbps / 8.0;
+    float total_mb = bytes_transferred / (1024.0 * 1024.0);
+
+    Serial.printf("\r\n--- iPerf TCP Report ---\n");
+    Serial.printf("Type: %d\n", (int)report_type);
+    Serial.printf("Duration: %lu ms\n", ms_duration);
+    Serial.printf("Transferred: %lu Bytes (%.2f MB)\n", bytes_transferred, total_mb);
+    Serial.printf("Bandwidth: %.2f Mbps (%.2f MB/s)\n", mbps, mb_s);
+    Serial.printf("------------------------\n> ");
+    // Unset the session if it's done or aborted
+    if (report_type == LWIPERF_TCP_DONE_SERVER || report_type == LWIPERF_TCP_ABORTED_LOCAL || 
+        report_type == LWIPERF_TCP_ABORTED_LOCAL_DATAERROR || report_type == LWIPERF_TCP_ABORTED_LOCAL_TXERROR || 
+        report_type == LWIPERF_TCP_ABORTED_REMOTE) {
+         lwiperf_session = NULL;
+    }
+}
+
+// UDP iPerf State
+static AsyncUDP udp_iperf_server;
+static bool udp_iperf_running = false;
+static volatile uint32_t udp_iperf_bytes = 0;
+static uint32_t udp_iperf_last_print = 0;
+
+static void onUDPPacket(AsyncUDPPacket packet) {
+  udp_iperf_bytes += packet.length();
+}
+
+// Ping State
+static bool ping_running = false;
+static String ping_target = "";
+static unsigned long last_ping_time = 0;
+
+void refreshLine() {
+  // Move cursor to beginning of line (using \r)
+  Serial.print("\r> ");
+  // Print current inputString
+  Serial.print(inputString);
+  // Clear any leftover characters from previous longer string
+  Serial.print("\033[K"); 
+  // Move cursor back to current cursor_pos
+  if (cursor_pos < inputString.length()) {
+    Serial.printf("\033[%dD", (int)(inputString.length() - cursor_pos));
+  }
+}
+
+void installHooks() {
+  esp_netif_t* eth_netif = ETH.netif();
+  esp_netif_t* ap_netif = WiFi.AP.netif();
+
+  if (eth_netif && orig_eth_input == NULL) {
+    struct netif* lwip_eth = (struct netif*)esp_netif_get_netif_impl(eth_netif);
+    if (lwip_eth) {
+      orig_eth_input = lwip_eth->input;
+      orig_eth_linkoutput = lwip_eth->linkoutput;
+      lwip_eth->input = eth_input_hook;
+      lwip_eth->linkoutput = eth_linkoutput_hook;
+      logMsg(LOG_INFO, "ETH Hooks installed (Handle: %p, netif: %p)", eth_netif, lwip_eth);
+    }
+  }
+
+  if (ap_netif && orig_ap_input == NULL) {
+    struct netif* lwip_ap = (struct netif*)esp_netif_get_netif_impl(ap_netif);
+    if (lwip_ap) {
+      orig_ap_input = lwip_ap->input;
+      orig_ap_linkoutput = lwip_ap->linkoutput;
+      lwip_ap->input = ap_input_hook;
+      lwip_ap->linkoutput = ap_linkoutput_hook;
+      logMsg(LOG_INFO, "AP Hooks installed (Handle: %p, netif: %p)", ap_netif, lwip_ap);
+    }
+  }
+}
+
+// Command List for Autocomplete
+const char* shell_commands[] = {
+  "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "ifconfig", "arp", "dhcp", "iperf", "udp_iperf"
+};
+const int shell_cmd_count = sizeof(shell_commands) / sizeof(shell_commands[0]);
+
+// Shell History
+#define MAX_HISTORY 10
+static String shell_history[MAX_HISTORY];
+static int history_count = 0;
+static int history_index = -1;
+
+// Autocomplete Cycling
+static int tab_match_index = -1;
+static String tab_prefix = "";
+
+// ANSI Sequence Parser State
+static enum { ANSI_NONE, ANSI_ESC, ANSI_BRACKET } ansi_state = ANSI_NONE;
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #define ENABLE_LCD // Enable logic, but will be checked dynamically
@@ -48,12 +335,6 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   tft.endWrite();
   lv_disp_flush_ready(disp);
 }
-
-// WiFi AP Configuration
-#define AP_SSID "eth2ap"
-#define AP_PASSWORD "12345678"
-#define AP_CHANNEL 1
-#define AP_MAX_CONN 4
 
 // Network state
 // ============================================================================
@@ -174,7 +455,7 @@ void updateLCD() {
   // Update AP Status Label
   if (ap_started) {
     char buf_ap[64];
-    snprintf(buf_ap, sizeof(buf_ap), "AP: #00FF00 Running#\n SSID: %s", AP_SSID);
+    snprintf(buf_ap, sizeof(buf_ap), "AP: #00FF00 Running#\n SSID: %s", ap_ssid_custom.c_str());
     lv_label_set_text(ui_label_ap, buf_ap);
 
     char buf_clients[32];
@@ -188,6 +469,511 @@ void updateLCD() {
 }
 
 /**
+ * @brief Handle Serial Shell Commands
+ */
+void handleShell() {
+  while (Serial.available()) {
+    char inChar = (char)Serial.read();
+
+    // ANSI Escape Sequence Parser
+    if (ansi_state == ANSI_NONE) {
+      if (inChar == 0x1B) { // ESC
+        ansi_state = ANSI_ESC;
+        continue;
+      }
+    } else if (ansi_state == ANSI_ESC) {
+      if (inChar == '[') {
+        ansi_state = ANSI_BRACKET;
+      } else {
+        ansi_state = ANSI_NONE;
+      }
+      continue;
+    } else if (ansi_state == ANSI_BRACKET) {
+      ansi_state = ANSI_NONE;
+      if (inChar == 'A') { // UP Arrow
+        if (history_count > 0) {
+          if (history_index == -1) history_index = history_count - 1;
+          else if (history_index > 0) history_index--;
+          
+          inputString = shell_history[history_index];
+          cursor_pos = inputString.length();
+          refreshLine();
+        }
+        continue;
+      }
+      else if (inChar == 'B') { // DOWN Arrow
+        if (history_count > 0 && history_index != -1) {
+          history_index++;
+          if (history_index >= history_count) {
+            history_index = -1;
+            inputString = "";
+          } else {
+            inputString = shell_history[history_index];
+          }
+          cursor_pos = inputString.length();
+          refreshLine();
+        }
+        continue;
+      }
+      else if (inChar == 'C') { // RIGHT Arrow
+        if (cursor_pos < inputString.length()) {
+          cursor_pos++;
+          Serial.print("\033[C"); // ANSI Right
+        }
+        continue;
+      }
+      else if (inChar == 'D') { // LEFT Arrow
+        if (cursor_pos > 0) {
+          cursor_pos--;
+          Serial.print("\033[D"); // ANSI Left
+        }
+        continue;
+      }
+      continue;
+    }
+    
+    // Ctrl+C (Cancel)
+    if (inChar == 0x03) {
+      if (ping_running) {
+        ping_running = false;
+        Serial.print("^C\r\nStopping ping.\r\n> ");
+      } else {
+        Serial.print("^C\r\n> ");
+      }
+      inputString = "";
+      cursor_pos = 0;
+      history_index = -1;
+      tab_match_index = -1;
+      tab_prefix = "";
+      continue;
+    }
+
+    // Reset Tab Cycling if anything else is pressed
+    if (inChar != 0x09) {
+      tab_match_index = -1;
+      tab_prefix = "";
+    }
+
+    // Echo back the character
+    if (inChar == '\n' || inChar == '\r') {
+      Serial.print("\r\n"); // New line on enter
+      if (inputString.length() > 0) {
+        // Save to history
+        if (history_count == 0 || shell_history[history_count-1] != inputString) {
+          if (history_count < MAX_HISTORY) {
+            shell_history[history_count++] = inputString;
+          } else {
+            for (int i = 0; i < MAX_HISTORY - 1; i++) shell_history[i] = shell_history[i+1];
+            shell_history[MAX_HISTORY-1] = inputString;
+          }
+        }
+        history_index = -1;
+        cursor_pos = 0; // Reset for next command
+        stringComplete = true;
+      } else {
+        Serial.print("> "); // Empty line, just show prompt
+        cursor_pos = 0;
+      }
+    } 
+    else if (inChar == 0x09) { // Tab key
+      if (inputString.length() > 0) {
+        // First tab or cycling?
+        if (tab_match_index == -1) {
+          tab_prefix = inputString;
+          tab_match_index = 0;
+        } else {
+          tab_match_index++;
+        }
+
+        String matches[shell_cmd_count];
+        int matchCount = 0;
+        for (int i = 0; i < shell_cmd_count; i++) {
+          if (String(shell_commands[i]).startsWith(tab_prefix)) {
+            matches[matchCount++] = shell_commands[i];
+          }
+        }
+
+        if (matchCount > 0) {
+          if (tab_match_index >= matchCount) tab_match_index = 0;
+          
+          inputString = matches[tab_match_index];
+          cursor_pos = inputString.length();
+          refreshLine();
+        }
+      }
+    }
+    else if (inChar == 0x08 || inChar == 0x7F) { // Backspace or Delete
+      if (cursor_pos > 0) {
+        inputString.remove(cursor_pos - 1, 1);
+        cursor_pos--;
+        refreshLine();
+      }
+    }
+    else {
+      // Insert character at cursor_pos
+      if (cursor_pos == inputString.length()) {
+        inputString += inChar;
+        cursor_pos++;
+        Serial.print(inChar); // Normal echo
+      } else {
+        String start = inputString.substring(0, cursor_pos);
+        String end = inputString.substring(cursor_pos);
+        inputString = start + inChar + end;
+        cursor_pos++;
+        refreshLine();
+      }
+    }
+  }
+
+  if (stringComplete) {
+    inputString.trim();
+    // Handled in handleShell loop already
+
+    String cmd = inputString;
+    String arg = "";
+    int spaceIndex = inputString.indexOf(' ');
+    if (spaceIndex != -1) {
+      cmd = inputString.substring(0, spaceIndex);
+      arg = inputString.substring(spaceIndex + 1);
+      arg.trim();
+    }
+
+    if (cmd.equalsIgnoreCase("help")) {
+      Serial.print("\n\rAvailable Commands:\r\n");
+      Serial.print("  help            - Show this help\r\n");
+      Serial.print("  status          - Show current system status\r\n");
+      Serial.print("  dmesg [lines]   - Show system kernel logs (Ring Buffer)\r\n");
+      Serial.print("  loglevel <0-4>  - Set log level (0:NONE, 1:ERR, 2:WARN, 3:INFO, 4:DEBUG)\r\n");
+      Serial.print("  monitor <on/off>- Toggle periodic status printing\r\n");
+      Serial.print("  restart         - Reboot system\r\n");
+      Serial.print("  set_ssid <ssid> - Change WiFi AP SSID\r\n");
+      Serial.print("  set_pw <pass>   - Change WiFi AP Password\r\n");
+      Serial.print("  stats           - Show interface statistics (Bytes/Packets)\r\n");
+      Serial.print("  traffic [on/off]- Show NAT sessions (if on, periodically shows speed)\r\n");
+      Serial.print("  ping <host>     - Ping a host (domain or IP)\r\n");
+      Serial.print("  ifconfig        - Show network interface configurations\r\n");
+      Serial.print("  arp             - Show connected AP clients (MAC/RSSI)\r\n");
+      Serial.print("  dhcp            - Show DHCP server leases (IP/MAC mappings)\r\n");
+      Serial.print("  iperf <start|stop>- Start/stop TCP iPerf Server (Port 5001)\r\n");
+      Serial.print("  udp_iperf <start|stop>- Start/stop UDP Speed Test (Port 5002)\r\n");
+      Serial.print("\r\n");
+    } 
+    else if (cmd.equalsIgnoreCase("status")) {
+      Serial.print("\n\r--- System Status ---\r\n");
+      Serial.printf("Ethernet: %s (IP: %s)\r\n", eth_connected ? "Connected" : "Disconnected", ETH.localIP().toString().c_str());
+      Serial.printf("WiFi AP : %s (SSID: %s)\r\n", ap_started ? "Running" : "Stopped", ap_ssid_custom.c_str());
+      Serial.printf("Clients : %d\r\n", WiFi.softAPgetStationNum());
+      Serial.printf("Log Lev : %d\r\n", (int)current_log_level);
+      Serial.printf("Monitor : %s\r\n", monitor_enabled ? "ON" : "OFF");
+      Serial.printf("Uptime  : %lu sec\r\n", millis() / 1000);
+      Serial.printf("CPU Freq: %u MHz\r\n", getCpuFrequencyMhz());
+      Serial.printf("Flash   : %u MB\r\n", ESP.getFlashChipSize() / (1024 * 1024));
+      
+      // CPU Temperature (Best effort)
+      float temp = temperatureRead();
+      if (!isnan(temp)) {
+        Serial.printf("CPU Temp: %.1f °C\r\n", temp);
+      }
+      
+      Serial.printf("Free RAM: %u KB (Internal)\r\n", ESP.getFreeHeap() / 1024);
+      Serial.printf("Min Free: %u KB (Internal Min)\r\n", ESP.getMinFreeHeap() / 1024);
+      if (psramFound()) {
+        Serial.printf("PSRAM   : %u / %u KB (Free/Total)\r\n", ESP.getFreePsram() / 1024, ESP.getPsramSize() / 1024);
+      } else {
+        Serial.print("PSRAM   : Not Found\r\n");
+      }
+      Serial.print("-----------------------------\r\n\r\n");
+    }
+    else if (cmd.equalsIgnoreCase("dmesg")) {
+      Serial.print("\n\r--- System Logs (dmesg) ---\r\n");
+      
+      int max_lines = dmesg_count;
+      if (arg.length() > 0) {
+        int requested = arg.toInt();
+        if (requested > 0 && requested < dmesg_count) {
+          max_lines = requested;
+        }
+      }
+      
+      int count = 0;
+      int idx = (dmesg_head - max_lines + DMESG_MAX_LINES) % DMESG_MAX_LINES;
+      
+      while (count < max_lines) {
+        unsigned long ts = dmesg_buffer[idx].timestamp;
+        LogLevel lvl = dmesg_buffer[idx].level;
+        const char* msg = dmesg_buffer[idx].message;
+        
+        const char* lvl_str = "";
+        switch(lvl) {
+          case LOG_ERROR: lvl_str = "[ERROR]"; break;
+          case LOG_WARN:  lvl_str = "[WARN ]"; break;
+          case LOG_INFO:  lvl_str = "[INFO ]"; break;
+          case LOG_DEBUG: lvl_str = "[DEBUG]"; break;
+          default: break;
+        }
+        
+        Serial.printf("[%6lu.%03lu] %s %s\r\n", ts / 1000, ts % 1000, lvl_str, msg);
+        
+        idx = (idx + 1) % DMESG_MAX_LINES;
+        count++;
+      }
+      Serial.print("---------------------------\r\n\r\n");
+    }
+    else if (cmd.equalsIgnoreCase("monitor")) {
+      if (arg.equalsIgnoreCase("on")) {
+        monitor_enabled = true;
+        Serial.print("Periodic monitoring: ON\r\n");
+      } else if (arg.equalsIgnoreCase("off")) {
+        monitor_enabled = false;
+        Serial.print("Periodic monitoring: OFF\r\n");
+      } else if (arg.equalsIgnoreCase("traffic")) {
+        monitor_traffic = !monitor_traffic;
+        Serial.printf("Traffic monitoring: %s\r\n", monitor_traffic ? "ON" : "OFF");
+      } else {
+        Serial.print("Usage: monitor <on/off/traffic>\r\n");
+      }
+    }
+    else if (cmd.equalsIgnoreCase("loglevel")) {
+      if (arg.length() > 0) {
+        int val = arg.toInt();
+        if (val >= 0 && val <= 4) {
+          current_log_level = (LogLevel)val;
+          Serial.printf("Log level changed to %d\r\n", val);
+        } else {
+          Serial.print("Error: Log level must be between 0 and 4.\r\n");
+        }
+      } else {
+        Serial.printf("Current Log Level: %d\r\n", (int)current_log_level);
+      }
+    }
+    else if (cmd.equalsIgnoreCase("restart")) {
+      Serial.print("Restarting system...\r\n");
+      delay(500);
+      ESP.restart();
+    } 
+    else if (cmd.equalsIgnoreCase("set_ssid")) {
+      if (arg.length() > 0) {
+        ap_ssid_custom = arg;
+        preferences.begin("wifi-config", false);
+        preferences.putString("ssid", ap_ssid_custom);
+        preferences.putString("password", ap_pw_custom); // Save both for consistency
+        preferences.end();
+        Serial.printf("Changing SSID to '%s'. Restarting AP...\r\n", ap_ssid_custom.c_str());
+        
+        WiFi.softAPdisconnect(false); // Don't turn off WiFi radio, just stop AP
+        delay(100);
+        WiFi.softAP(ap_ssid_custom.c_str(), ap_pw_custom.c_str(), AP_CHANNEL, 0, AP_MAX_CONN);
+        updateLCD();
+      } else {
+        Serial.print("Error: No SSID provided. Usage: set_ssid <name>\r\n");
+      }
+    } 
+    else if (cmd.equalsIgnoreCase("set_pw")) {
+      if (arg.length() >= 8) {
+        ap_pw_custom = arg;
+        preferences.begin("wifi-config", false);
+        preferences.putString("ssid", ap_ssid_custom);   // Save both for consistency
+        preferences.putString("password", ap_pw_custom);
+        preferences.end();
+        Serial.printf("Changing Password to '%s'. Restarting AP...\r\n", ap_pw_custom.c_str());
+        
+        WiFi.softAPdisconnect(false); // Don't turn off WiFi radio, just stop AP
+        delay(100);
+        WiFi.softAP(ap_ssid_custom.c_str(), ap_pw_custom.c_str(), AP_CHANNEL, 0, AP_MAX_CONN);
+      } else {
+        Serial.print("Error: Password must be at least 8 characters. Usage: set_pw <pass>\r\n");
+      }
+    } 
+    else if (cmd.equalsIgnoreCase("stats")) {
+      Serial.println("\r\n--- Interface Statistics (Live) ---");
+      Serial.printf("Free RAM: %u KB, Min: %u KB\r\n", ESP.getFreeHeap() / 1024, ESP.getMinFreeHeap() / 1024);
+      
+      Serial.println("[Ethernet]");
+      Serial.printf("  RX: %s (%lu pkts)\r\n", formatBytes(eth_stats.rx_bytes).c_str(), eth_stats.rx_packets);
+      Serial.printf("  TX: %s (%lu pkts)\r\n", formatBytes(eth_stats.tx_bytes).c_str(), eth_stats.tx_packets);
+      
+      Serial.println("[WiFi AP]");
+      Serial.printf("  RX: %s (%lu pkts)\r\n", formatBytes(ap_stats.rx_bytes).c_str(), ap_stats.rx_packets);
+      Serial.printf("  TX: %s (%lu pkts)\r\n", formatBytes(ap_stats.tx_bytes).c_str(), ap_stats.tx_packets);
+      
+      Serial.println("-----------------------------------\r\n");
+    }
+    else if (cmd.equalsIgnoreCase("traffic")) {
+      if (arg.equalsIgnoreCase("on")) {
+        traffic_log_enabled = true;
+        installHooks(); // Ensure hooks are on
+        Serial.println("Real-time traffic logging: ON");
+      } else if (arg.equalsIgnoreCase("off")) {
+        traffic_log_enabled = false;
+        Serial.println("Real-time traffic logging: OFF");
+      } else {
+        Serial.println("\r\n--- Connected Stations ---");
+        wifi_sta_list_t stationList;
+        esp_wifi_ap_get_sta_list(&stationList);
+        for (int i = 0; i < stationList.num; i++) {
+          char macStr[18];
+          snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+                   stationList.sta[i].mac[0], stationList.sta[i].mac[1], stationList.sta[i].mac[2],
+                   stationList.sta[i].mac[3], stationList.sta[i].mac[4], stationList.sta[i].mac[5]);
+          Serial.printf("  [%d] MAC: %s, RSSI: %d\r\n", i+1, macStr, stationList.sta[i].rssi);
+        }
+        Serial.println("--------------------------\r\n");
+      }
+    }
+    else if (cmd.equalsIgnoreCase("ping")) {
+      if (arg.length() > 0) {
+        ping_target = arg;
+        ping_running = true;
+        last_ping_time = 0; // Start immediately
+        Serial.printf("Pinging %s (Infinite, press Ctrl+C to stop)...\r\n", ping_target.c_str());
+      } else {
+        Serial.print("Usage: ping <host>\r\n");
+      }
+    }
+    else if (cmd.equalsIgnoreCase("ifconfig") || cmd.equalsIgnoreCase("ip")) {
+      Serial.print("\r\n--- Interface Configuration ---\r\n");
+      Serial.println("[ETH] Ethernet Interface:");
+      Serial.printf("  Status: %s\r\n", eth_connected ? "UP" : "DOWN");
+      if (eth_connected) {
+        Serial.printf("  MAC   : %s\r\n", ETH.macAddress().c_str());
+        Serial.printf("  IPv4  : %s\r\n", ETH.localIP().toString().c_str());
+        Serial.printf("  Subnet: %s\r\n", ETH.subnetMask().toString().c_str());
+        Serial.printf("  GW    : %s\r\n", ETH.gatewayIP().toString().c_str());
+        Serial.printf("  DNS   : %s\r\n", ETH.dnsIP().toString().c_str());
+      }
+      
+      Serial.println("\r\n[AP] WiFi Access Point:");
+      Serial.printf("  Status: %s\r\n", ap_started ? "UP" : "DOWN");
+      if (ap_started) {
+        Serial.printf("  MAC   : %s\r\n", WiFi.softAPmacAddress().c_str());
+        Serial.printf("  IPv4  : %s\r\n", WiFi.softAPIP().toString().c_str());
+      }
+      Serial.print("-------------------------------\r\n");
+    }
+    else if (cmd.equalsIgnoreCase("arp")) {
+      Serial.print("\r\n--- AP ARP / Station List ---\r\n");
+      wifi_sta_list_t stationList;
+      esp_wifi_ap_get_sta_list(&stationList);
+      if (stationList.num == 0) {
+        Serial.println("  No clients connected.");
+      } else {
+        for (int i = 0; i < stationList.num; i++) {
+          char macStr[18];
+          snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+                   stationList.sta[i].mac[0], stationList.sta[i].mac[1], stationList.sta[i].mac[2],
+                   stationList.sta[i].mac[3], stationList.sta[i].mac[4], stationList.sta[i].mac[5]);
+          Serial.printf("  [%d] MAC: %s, RSSI: %d\r\n", i+1, macStr, stationList.sta[i].rssi);
+        }
+      }
+      Serial.print("-----------------------------\r\n");
+    }
+    else if (cmd.equalsIgnoreCase("dhcp")) {
+      Serial.print("\r\n--- AP DHCP Leases ---\r\n");
+      esp_netif_t* ap_netif = WiFi.AP.netif();
+      wifi_sta_list_t stationList;
+      esp_wifi_ap_get_sta_list(&stationList);
+
+      if (ap_netif && stationList.num > 0) {
+        esp_netif_pair_mac_ip_t mac_ip_pair[10]; 
+        int num_clients = stationList.num > 10 ? 10 : stationList.num;
+        
+        // Prepare MAC addresses as input
+        for (int i = 0; i < num_clients; i++) {
+            memcpy(mac_ip_pair[i].mac, stationList.sta[i].mac, 6);
+            mac_ip_pair[i].ip.addr = 0; // Clear IP initially
+        }
+
+        // ESP_OK (0) means success
+        if (esp_netif_dhcps_get_clients_by_mac(ap_netif, num_clients, mac_ip_pair) == ESP_OK) {
+          int count = 0;
+          for (int i = 0; i < num_clients; i++) {
+            if (mac_ip_pair[i].ip.addr != 0) {
+              char macStr[18];
+              snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+                       mac_ip_pair[i].mac[0], mac_ip_pair[i].mac[1], mac_ip_pair[i].mac[2],
+                       mac_ip_pair[i].mac[3], mac_ip_pair[i].mac[4], mac_ip_pair[i].mac[5]);
+                       
+              char ipStr[16];
+              ip4addr_ntoa_r((const ip4_addr_t*)&mac_ip_pair[i].ip, ipStr, sizeof(ipStr));
+
+              Serial.printf("  [%d] MAC: %s  ->  IP: %s\r\n", count+1, macStr, ipStr);
+              count++;
+            }
+          }
+          if (count == 0) {
+             Serial.println("  No active DHCP leases with IP assigned.");
+          }
+        } else {
+          Serial.println("  Failed to query DHCP server.");
+        }
+      } else {
+        Serial.println("  No active DHCP leases (or AP down).");
+      }
+      Serial.print("----------------------\r\n");
+    }
+    else if (cmd.equalsIgnoreCase("iperf")) {
+      if (arg.equalsIgnoreCase("start")) {
+        if (lwiperf_session != NULL) {
+           Serial.println("iPerf server is already running on port 5001.");
+        } else {
+           lwiperf_session = lwiperf_start_tcp_server_default(lwiperf_report, NULL);
+           if (lwiperf_session != NULL) {
+               Serial.println("iPerf TCP server started (Port 5001). Connect with: iperf -c <IP> -i 1 -t 10");
+           } else {
+               Serial.println("Failed to start iPerf TCP server.");
+           }
+        }
+      } else if (arg.equalsIgnoreCase("stop")) {
+        if (lwiperf_session != NULL) {
+           lwiperf_abort(lwiperf_session);
+           lwiperf_session = NULL;
+           Serial.println("iPerf server stopped.");
+        } else {
+           Serial.println("iPerf server is not running.");
+        }
+      } else {
+        Serial.println("Usage: iperf <start|stop>");
+      }
+    }
+    else if (cmd.equalsIgnoreCase("udp_iperf")) {
+      if (arg.equalsIgnoreCase("start")) {
+        if (udp_iperf_running) {
+           Serial.println("UDP iPerf server is already running on port 5002.");
+        } else {
+           if (udp_iperf_server.listen(5002)) {
+               udp_iperf_server.onPacket(onUDPPacket);
+               udp_iperf_running = true;
+               udp_iperf_bytes = 0;
+               udp_iperf_last_print = millis();
+               Serial.println("UDP Test server started on Port 5002.");
+               Serial.println("Connect with: iperf -c <IP> -u -p 5002 -b 20M -i 1 -t 10");
+           } else {
+               Serial.println("Failed to start UDP Test server.");
+           }
+        }
+      } else if (arg.equalsIgnoreCase("stop")) {
+        if (udp_iperf_running) {
+           udp_iperf_server.close();
+           udp_iperf_running = false;
+           Serial.println("UDP Test server stopped.");
+        } else {
+           Serial.println("UDP Test server is not running.");
+        }
+      } else {
+        Serial.println("Usage: udp_iperf <start|stop>");
+      }
+    }
+    else {
+      Serial.printf("Unknown command: %s. Type 'help' for list.\r\n", cmd.c_str());
+    }
+
+    inputString = "";
+    stringComplete = false;
+    Serial.print("> "); // Prompt for next command
+  }
+}
+
+/**
  * @brief WiFi and Ethernet event handler
  *
  * Handles connection events for both Ethernet and WiFi AP interfaces.
@@ -196,108 +982,61 @@ void updateLCD() {
  */
 void NetworkEvent(arduino_event_id_t event) {
   switch (event) {
-  // Ethernet Events
   case ARDUINO_EVENT_ETH_START:
-    Serial.println("ETH Started");
+    logMsg(LOG_INFO, "ETH Started");
     ETH.setHostname("eth2ap-bridge");
-#if USE_STATIC_IP
-    if (ETH.config(local_ip, gateway, subnet, dns1, dns2)) {
-      Serial.println("Static IP configuration applied.");
-    } else {
-      Serial.println("Static IP configuration failed!");
-    }
-#endif
+    installHooks(); // Try installing hooks on start
     break;
 
   case ARDUINO_EVENT_ETH_CONNECTED:
-    Serial.println("ETH Connected");
+    logMsg(LOG_INFO, "ETH Connected");
+    installHooks(); // Re-verify hooks on connection
     break;
 
   case ARDUINO_EVENT_ETH_GOT_IP:
-    Serial.print("ETH MAC: ");
-    Serial.print(ETH.macAddress());
-    Serial.print(", IPv4: ");
-    Serial.print(ETH.localIP());
-    if (ETH.fullDuplex()) {
-      Serial.print(", FULL_DUPLEX");
-    }
-    Serial.print(", ");
-    Serial.print(ETH.linkSpeed());
-    Serial.println("Mbps");
-
+    logMsg(LOG_INFO, "ETH MAC: %s, IPv4: %s, %s, %d Mbps", 
+           ETH.macAddress().c_str(), ETH.localIP().toString().c_str(),
+           ETH.fullDuplex() ? "FULL_DUPLEX" : "HALF_DUPLEX", ETH.linkSpeed());
     eth_connected = true;
 
-    // Start WiFi AP if not already started (it should be started in setup)
-    if (!ap_started) {
-      Serial.println("Starting WiFi AP...");
-
-      // Set WiFi Bandwidth to HT40 for higher throughput
-      esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT40);
-
-      WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, 0, AP_MAX_CONN);
-      ap_started = true;
-    }
-
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-    // Enable NAPT (Network Address Port Translation) for packet forwarding
-    // This allows devices connected to the WiFi AP to access the network
-    // through Ethernet (Internal or External network)
     if (WiFi.AP.enableNAPT(true)) {
-      Serial.println("NAPT enabled - Bridge is active");
+      logMsg(LOG_INFO, "NAPT enabled - Bridge is active");
     } else {
-      Serial.println("NAPT enable failed!");
+      logMsg(LOG_ERROR, "NAPT enable failed!");
     }
-#else
-    Serial.println("WARNING: NAPT is not supported in Arduino core < 3.0.0");
-    Serial.println("Please upgrade to Arduino-ESP32 core 3.0.0 or higher");
-    Serial.println("for full bridge functionality.");
-    Serial.println("WiFi AP started but packet forwarding is disabled.");
 #endif
     break;
 
   case ARDUINO_EVENT_ETH_DISCONNECTED:
-    Serial.println("ETH Disconnected");
+    logMsg(LOG_WARN, "ETH Disconnected");
     eth_connected = false;
-
-    // Disable NAPT when Ethernet is disconnected (WiFi AP stays running)
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
     WiFi.AP.enableNAPT(false);
-    Serial.println("NAPT disabled - Internet sharing stopped.");
-    Serial.println("WiFi AP is still running but without internet access.");
 #endif
     break;
 
   case ARDUINO_EVENT_ETH_STOP:
-    Serial.println("ETH Stopped");
+    logMsg(LOG_INFO, "ETH Stopped");
     eth_connected = false;
     break;
 
-  // WiFi AP Events
   case ARDUINO_EVENT_WIFI_AP_START:
-    Serial.println("WiFi AP Started");
-    Serial.print("AP SSID: ");
-    Serial.println(AP_SSID);
-    Serial.print("AP IP address: ");
-    Serial.println(WiFi.softAPIP());
+    logMsg(LOG_INFO, "WiFi AP Started (SSID: %s, IP: %s)", ap_ssid_custom.c_str(), WiFi.softAPIP().toString().c_str());
     ap_started = true;
     break;
 
   case ARDUINO_EVENT_WIFI_AP_STOP:
-    Serial.println("WiFi AP Stopped");
+    logMsg(LOG_INFO, "WiFi AP Stopped");
     ap_started = false;
     break;
 
   case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
-    Serial.println("WiFi AP: Station connected");
+    logMsg(LOG_INFO, "WiFi AP: Station connected");
     break;
 
   case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED:
-    Serial.println("WiFi AP: Station disconnected");
-    break;
-
-  case ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED:
-    Serial.print("WiFi AP: Station IP assigned: ");
-    Serial.println(IPAddress(WiFi.softAPIP()));
+    logMsg(LOG_INFO, "WiFi AP: Station disconnected");
     break;
 
   default:
@@ -317,29 +1056,30 @@ void setup() {
   Serial.println("===== eth2ap Bridge Example =====");
   Serial.println("Ethernet to WiFi AP Bridge using NAPT");
   Serial.println("=====================================\n");
+  Serial.print("> "); // Initial prompt
+
+  // Step 0: Load saved settings from NVS
+  preferences.begin("wifi-config", false); // Open in read-write mode to save if not exists
+  if (!preferences.isKey("ssid")) {
+    preferences.putString("ssid", ap_ssid_custom);
+    preferences.putString("password", ap_pw_custom);
+  } else {
+    ap_ssid_custom = preferences.getString("ssid", AP_SSID_BASE);
+    ap_pw_custom = preferences.getString("password", AP_PASSWORD_BASE);
+  }
+  preferences.end();
+  logMsg(LOG_INFO, "Loaded settings: SSID='%s'", ap_ssid_custom.c_str());
 
   // Step 1: Start WiFi AP immediately (Always-On Priority)
-  Serial.print("Step 1: Starting WiFi AP (softAP)... ");
-  if (WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, 0, AP_MAX_CONN)) {
-    Serial.println("Success.");
-  } else {
-    Serial.println("FAILED.");
-  }
+  logMsg(LOG_INFO, "Step 1: Starting WiFi AP (softAP)... %s", 
+    WiFi.softAP(ap_ssid_custom.c_str(), ap_pw_custom.c_str(), AP_CHANNEL, 0, AP_MAX_CONN) ? "Success" : "FAILED");
 
-  Serial.print("Step 2: Setting WiFi Bandwidth to HT40... ");
   esp_err_t err = esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT40);
-  if (err == ESP_OK) {
-    Serial.println("Success.");
-  } else {
-    Serial.printf("FAILED (err: %d).\n", err);
-  }
+  logMsg(LOG_INFO, "Step 2: Setting WiFi Bandwidth to HT40... %s", (err == ESP_OK) ? "Success" : "FAILED");
 
-  Serial.print("Step 3: Checking AP Status... ");
+  logMsg(LOG_INFO, "Step 3: Checking AP Status... SSID: %s, IP: %s", 
+         ap_ssid_custom.c_str(), WiFi.softAPIP().toString().c_str());
   ap_started = true;
-  Serial.print("SSID: ");
-  Serial.print(AP_SSID);
-  Serial.print(", IP: ");
-  Serial.println(WiFi.softAPIP());
 
   // Step 4: Setting up WiFi events
   Serial.print("Step 4: Registering Network Events... ");
@@ -390,35 +1130,27 @@ void setup() {
 #endif
 
   // Step 8: Initialize Ethernet
-  Serial.println("Step 8: Initializing Ethernet...");
+  logMsg(LOG_INFO, "Step 8: Initializing Ethernet...");
 
 #if CONFIG_IDF_TARGET_ESP32
-  // For ESP32 with internal Ethernet (LAN8720, RTL8201, etc.)
-  if (!ETH.begin(ETH_TYPE, ETH_ADDR, ETH_MDC_PIN, ETH_MDIO_PIN, ETH_RESET_PIN,
-                 ETH_CLK_MODE)) {
-    Serial.println("ETH start Failed!");
-    Serial.println(
-        "WiFi AP is running, but internet sharing is not available.");
-    return;
-  }
+  ETH.begin(ETH_TYPE, ETH_ADDR, ETH_MDC_PIN, ETH_MDIO_PIN, ETH_RESET_PIN, ETH_CLK_MODE);
 #else
-  // For ESP32-S3 with W5500 SPI Ethernet
-  // Increase SPI frequency to 80MHz (Max supported) for maximum throughput
-  if (!ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN,
-                 SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 40)) {
-    Serial.println("ETH start Failed!");
-    Serial.println(
-        "WiFi AP is running, but internet sharing is not available.");
-    return;
-  }
+  ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN,
+            SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 40);
 #endif
 
-  Serial.println("Ethernet initialized successfully");
-  Serial.println(
-      "Waiting for Ethernet connection to enable internet sharing...");
-}
+#if USE_STATIC_IP
+  ETH.config(local_ip, gateway, subnet, dns1, dns2);
+#endif
 
-#include <ESP32Ping.h>
+  logMsg(LOG_INFO, "Ethernet initialization command sent");
+  
+  // Final Step: Install Hooks
+  installHooks(); 
+
+  Serial.println("Waiting for Ethernet connection to enable internet sharing...");
+  logMsg(LOG_INFO, "System ready. Type 'help' for commands.");
+}
 
 void loop() {
   // Print status every 5 seconds (Changed from 30 for debugging)
@@ -428,36 +1160,62 @@ void loop() {
   if (currentMillis - lastStatusPrint >= 5000) {
     lastStatusPrint = currentMillis;
 
-    Serial.println("\n----- Status -----");
-    Serial.print("Ethernet: ");
-    Serial.println(eth_connected ? "Connected" : "Disconnected");
-
-    if (eth_connected) {
-      Serial.print("  IP: ");
-      Serial.println(ETH.localIP());
-
-      // Ping Test to Gateway (Device A)
-      Serial.print("  Ping Gateway (");
-      Serial.print(gateway);
-      Serial.print("): ");
-      if (Ping.ping(gateway)) {
-        Serial.println("Success!");
-      } else {
-        Serial.println("FAILED!");
+    if (monitor_enabled) {
+      logMsg(LOG_INFO, "----- Status -----");
+      logMsg(LOG_INFO, "Ethernet: %s", eth_connected ? "Connected" : "Disconnected");
+      if (eth_connected) {
+        logMsg(LOG_INFO, "  IP: %s", ETH.localIP().toString().c_str());
       }
+      logMsg(LOG_INFO, "WiFi AP : %s", ap_started ? "Running" : "Stopped");
+      if (ap_started) {
+        logMsg(LOG_INFO, "  Clients: %d", WiFi.softAPgetStationNum());
+      }
+      logMsg(LOG_INFO, "------------------\r\n");
     }
 
-    Serial.print("WiFi AP: ");
-    Serial.println(ap_started ? "Running" : "Stopped");
-
-    if (ap_started) {
-      Serial.print("  Connected Stations: ");
-      Serial.println(WiFi.softAPgetStationNum());
+    if (monitor_traffic) {
+        unsigned long now = millis();
+        if (now - last_speed_check >= 2000) {
+          last_speed_check = now;
+          Serial.printf("[Monitor] ETH RX: %s, TX: %s | AP RX: %s, TX: %s\r\n", 
+                        formatBytes(eth_stats.rx_bytes).c_str(), formatBytes(eth_stats.tx_bytes).c_str(), 
+                        formatBytes(ap_stats.rx_bytes).c_str(), formatBytes(ap_stats.tx_bytes).c_str());
+        }
     }
-    Serial.println("------------------\n");
 
     // Update LCD periodically
     updateLCD();
+  }
+
+  // Handle Serial Shell
+  handleShell();
+
+  // Handle UDP iPerf Reporting
+  if (udp_iperf_running) {
+    uint32_t now = millis();
+    if (now - udp_iperf_last_print >= 1000) {
+      // Calculate Mbps and MB/s
+      float mbps = (udp_iperf_bytes * 8.0) / 1000000.0;
+      float mb_s = udp_iperf_bytes / (1024.0 * 1024.0);
+      
+      Serial.printf("\r\n[UDP iPerf] %.2f MB/s  |  %.2f Mbps  (Received: %u Bytes)\r\n> ", mb_s, mbps, (unsigned int)udp_iperf_bytes);
+      refreshLine();
+      udp_iperf_bytes = 0; // Reset for next second
+      udp_iperf_last_print = now;
+    }
+  }
+
+  // Infinite Ping
+  if (ping_running) {
+    if (currentMillis - last_ping_time >= 1000) {
+      last_ping_time = currentMillis;
+      bool success = Ping.ping(ping_target.c_str(), 1);
+      if (success) {
+        Serial.printf("Reply from %s: time=%.2fms\r\n", ping_target.c_str(), Ping.averageTime());
+      } else {
+        Serial.printf("Request timeout for %s\r\n", ping_target.c_str());
+      }
+    }
   }
 
   // Update LVGL timer handler

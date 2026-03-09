@@ -11,12 +11,13 @@
 // #define LILYGO_T_INTER_COM
 
 // Product Link :
-// https://www.lilygo.cc/products/t-eth-lite?variant=43120880746677 #define
-// LILYGO_T_ETH_LITE_ESP32
+// Product Link :
+// https://www.lilygo.cc/products/t-eth-lite?variant=43120880746677
+// #define LILYGO_T_ETH_LITE_ESP32
 
 // Product Link :
-// https://www.lilygo.cc/products/t-eth-lite?variant=43120880779445 #define
-// LILYGO_T_ETH_LITE_ESP32S3
+// https://www.lilygo.cc/products/t-eth-lite?variant=43120880779445
+#define LILYGO_T_ETH_LITE_ESP32S3
 
 // Product Link : N.A
 // #define LILYGO_T_ETH_ELITE_ESP32S3

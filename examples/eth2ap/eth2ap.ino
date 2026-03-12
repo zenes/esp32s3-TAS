@@ -28,6 +28,7 @@
 #include <stdarg.h>  // For va_list
 #include <Preferences.h> // For NVS storage
 #include <esp_netif.h>   // For network statistics
+#include <esp_mac.h>     // For esp_read_mac
 #include <esp_netif_net_stack.h>
 #include <lwip/netif.h>
 #include <lwip/prot/ip.h>
@@ -37,6 +38,9 @@
 #include <lwip/apps/lwiperf.h>
 #include <AsyncUDP.h>
 #include <inttypes.h>
+#include "toe_iperf.h" 
+#include "socket_bridge.h"
+#include "w5500_base.h"
 
 // Global Traffic Stats
 struct InterfaceStats {
@@ -294,7 +298,7 @@ void installHooks() {
 
 // Command List for Autocomplete
 const char* shell_commands[] = {
-  "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "ifconfig", "arp", "dhcp", "iperf", "udp_iperf"
+  "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "ifconfig", "arp", "dhcp", "iperf", "udp_iperf", "toe_iperf"
 };
 const int shell_cmd_count = sizeof(shell_commands) / sizeof(shell_commands[0]);
 
@@ -656,6 +660,7 @@ void handleShell() {
       Serial.print("  dhcp            - Show DHCP server leases (IP/MAC mappings)\r\n");
       Serial.print("  iperf <start|stop>- Start/stop TCP iPerf Server (Port 5001)\r\n");
       Serial.print("  udp_iperf <start|stop>- Start/stop UDP Speed Test (Port 5002)\r\n");
+      Serial.print("  toe_iperf <start|stop> [-s | -c ip] - Start/stop W5500 TOE Speed Test\r\n");
       Serial.print("\r\n");
     } 
     else if (cmd.equalsIgnoreCase("status")) {
@@ -933,6 +938,146 @@ void handleShell() {
         }
       } else {
         Serial.println("Usage: iperf <start|stop>");
+      }
+    }
+    else if (cmd.equalsIgnoreCase("toe_iperf")) {
+      if (arg.startsWith("start")) {
+        if(toe_iperf_is_running()) {
+            Serial.println("[TOE-iPerf] Already running. Please stop first.");
+            return;
+        }
+        
+        // Cache lwIP settings for TOE hardware to use before tearing down ETH
+        toe_iperf_cfg_t cfg;
+        cfg.port = 5003; // Default port
+        cfg.is_server = true;
+        cfg.local_ip = ETH.localIP();
+        cfg.gateway = ETH.gatewayIP();
+        cfg.subnet = ETH.subnetMask();
+        esp_read_mac(cfg.mac_addr, ESP_MAC_ETH);
+        
+        cfg.is_udp = false;
+        if (arg.indexOf("-u") != -1) {
+             cfg.is_udp = true;
+             arg.replace("-u", "");
+             arg.trim();
+        }
+        
+        Serial.printf("[TOE-iPerf] Shutting down ESP_ETH (lwIP) for HW %s test...\n", cfg.is_udp ? "UDP" : "TCP");
+        ETH.end(); // Stop conflicting driver and release SPI bus
+        
+        int dash_idx = arg.indexOf('-');
+        if (dash_idx != -1 && arg.length() > dash_idx + 1) {
+            char mode = arg.charAt(dash_idx + 1);
+            if (mode == 's') {
+                cfg.is_server = true;
+                if(toe_iperf_start(&cfg)) {
+                    Serial.println("[TOE-iPerf] Hardware Server Test Started.");
+                } else {
+                    Serial.println("[TOE-iPerf] Already running.");
+                }
+            } else if (mode == 'c') {
+                cfg.is_server = false;
+                String ip_str = arg.substring(dash_idx + 3);
+                ip_str.trim();
+                cfg.target_ip = ip_str.c_str(); // Memory safety for arg lifetime? 
+                if(toe_iperf_start(&cfg)) {
+                    Serial.printf("[TOE-iPerf] Hardware Client Test Started to %s.\r\n", cfg.target_ip);
+                } else {
+                    Serial.println("[TOE-iPerf] Already running.");
+                }
+            } else {
+             }
+        } else {
+             // Default to server if no args
+             if(toe_iperf_start(&cfg)) {
+                 Serial.println("[TOE-iPerf] Hardware Server Test Started (Default).");
+             } else {
+                 Serial.println("[TOE-iPerf] Already running.");
+                 // Restart ETH if failed
+                 ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 40);
+             }
+        }
+      } else if (arg.equalsIgnoreCase("stop")) {
+        if (!toe_iperf_is_running()) {
+            Serial.println("[TOE-iPerf] Hardware Test is not running.");
+            return;
+        }
+        toe_iperf_stop();
+        Serial.println("[TOE-iPerf] Hardware Test Stopped. Restoring ESP_ETH...");
+        // Restart the ESP-IDF driver to restore NAT operation
+        ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 40);
+        
+#if USE_STATIC_IP
+        ETH.config(local_ip, gateway, subnet, dns1, dns2);
+#endif
+        Serial.println("[TOE-iPerf] Internet sharing features resumed.");
+      } else {
+        Serial.println("Usage: toe_iperf <start|stop> [-s | -c ip_address]");
+      }
+    }
+    else if (cmd.equalsIgnoreCase("bridge")) {
+      if (arg.startsWith("start")) {
+        if(socket_bridge_is_running() || toe_iperf_is_running()) {
+            Serial.println("Another TOE task is already running.");
+            return;
+        }
+        
+        int listen_port = 5003; 
+        String target_ip = "192.168.0.100";
+        int target_port = 5003;
+        
+        // Find first space after "start"
+        int space1 = arg.indexOf(' ');
+        if (space1 != -1) {
+            int space2 = arg.indexOf(' ', space1 + 1);
+            if (space2 != -1) {
+                listen_port = arg.substring(space1 + 1, space2).toInt();
+                int space3 = arg.indexOf(' ', space2 + 1);
+                if (space3 != -1) {
+                    target_ip = arg.substring(space2 + 1, space3);
+                    target_port = arg.substring(space3 + 1).toInt();
+                } else {
+                    target_ip = arg.substring(space2 + 1);
+                }
+            }
+        }
+
+        socket_bridge_cfg_t cfg;
+        cfg.listen_port = listen_port;
+        
+        IPAddress target_ip_addr;
+        if (target_ip_addr.fromString(target_ip)) {
+            for(int i=0; i<4; i++) cfg.target_ip[i] = target_ip_addr[i];
+        } else {
+            // Default if parsing fails
+            cfg.target_ip[0] = 192; cfg.target_ip[1] = 168; cfg.target_ip[2] = 0; cfg.target_ip[3] = 100;
+        }
+        
+        cfg.target_port = target_port;
+        cfg.local_ip = ETH.localIP();
+        cfg.gateway = ETH.gatewayIP();
+        cfg.subnet = ETH.subnetMask();
+        esp_read_mac(cfg.mac_addr, ESP_MAC_ETH);
+        cfg.is_udp = false;
+
+        Serial.printf("[Bridge] Connecting WiFi:%d <-> Ethernet:%s:%d\n", listen_port, cfg.target_ip, cfg.target_port);
+        ETH.end(); 
+
+        if(socket_bridge_start(&cfg)) {
+            Serial.println("[Bridge] Started.");
+        } else {
+            Serial.println("[Bridge] Failed.");
+            ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 40);
+        }
+      } else if (arg.equalsIgnoreCase("stop")) {
+        socket_bridge_stop();
+        Serial.println("[Bridge] Stopped.");
+        delay(500);
+        ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 40);
+      } else {
+        Serial.println("Usage: bridge start <listen_port> <target_ip> <target_port>");
+        Serial.println("       bridge stop");
       }
     }
     else if (cmd.equalsIgnoreCase("udp_iperf")) {

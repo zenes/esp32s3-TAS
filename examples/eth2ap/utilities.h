@@ -104,6 +104,7 @@
 #define LCD_DC_PIN 8
 #define LCD_RST_PIN 15
 #define LCD_BL_PIN 16
+#define ENABLE_LCD
 
 #define IR_FILTER_NUM 46
 #elif defined(LILYGO_T_ETH_ELITE_ESP32S3)

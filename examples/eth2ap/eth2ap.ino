@@ -370,35 +370,53 @@ static bool ap_started = false;
  * @return true if LCD is detected, false otherwise
  */
 bool detectLCD() {
-  Serial.print("Probing LCD hardware... ");
+  Serial.print("Probing LCD hardware (Register 0x04)... ");
+  
   // Use a local SPI instance to probe without affecting global state
   SPIClass spi_probe(FSPI); // FSPI is SPI2_HOST on S3
   spi_probe.begin(LCD_SCLK_PIN, LCD_MISO_PIN, LCD_MOSI_PIN, LCD_CS_PIN);
   
+  pinMode(LCD_MISO_PIN, INPUT_PULLUP); // Enable Pull-up on MISO
   pinMode(LCD_CS_PIN, OUTPUT);
+  pinMode(LCD_DC_PIN, OUTPUT);
+  pinMode(LCD_RST_PIN, OUTPUT);
+
+  // Perform Hardware Reset before probing
+  digitalWrite(LCD_RST_PIN, LOW);
+  delay(10);
+  digitalWrite(LCD_RST_PIN, HIGH);
+  delay(120);
+  
   digitalWrite(LCD_CS_PIN, LOW);
   
   // Try to Read Display ID (0x04)
-  // ST7789/ILI9341 ID: dummy, then ID1, ID2, ID3
-  spi_probe.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+  // ST7789/ILI9341 ID: dummy(1bit or 1byte), then ID1, ID2, ID3
+  spi_probe.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  
+  // Send Command 0x04
+  digitalWrite(LCD_DC_PIN, LOW);
   spi_probe.transfer(0x04);
-  spi_probe.transfer(0x00); // dummy
+  
+  // Read Data
+  digitalWrite(LCD_DC_PIN, HIGH);
+  spi_probe.transfer(0x00); // dummy byte
   uint8_t id1 = spi_probe.transfer(0x00);
   uint8_t id2 = spi_probe.transfer(0x00);
   uint8_t id3 = spi_probe.transfer(0x00);
-  spi_probe.endTransaction();
   
+  spi_probe.endTransaction();
   digitalWrite(LCD_CS_PIN, HIGH);
   spi_probe.end(); 
 
   Serial.printf("ID: %02X %02X %02X -> ", id1, id2, id3);
   
-  // Floating PINs usually return 0xFF or 0x00
-  if ((id1 == 0xFF || id1 == 0x00) && (id2 == 0xFF || id2 == 0x00)) {
-    Serial.println("Not Found.");
+  // Floating inputs or disconnected miso usually return 0xFF or 0x00
+  if ((id1 == 0xFF || id1 == 0x00) && (id2 == 0xFF || id2 == 0x00) && (id3 == 0xFF || id3 == 0x00)) {
+    Serial.println("LCD Not Detected.");
     return false;
   }
-  Serial.println("Found!");
+  
+  Serial.printf("LCD Detected! (Chip ID: %02X%02X%02X)\r\n", id1, id2, id3);
   return true;
 }
 

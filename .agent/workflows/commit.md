@@ -6,6 +6,7 @@ This workflow automates the process of documenting changes before committing and
 
 1.  **Analyze changes**: Use `git diff` or `git status` to identify all current work.
 2.  **Update Progress**: Summarize these changes into `examples/eth2ap/docs/progress.md`. Use a bulleted list of meaningful changes.
+    - **Note**: All documentation updates and summaries must be written in **Korean** (한글).
     - If the file is empty, create a new structure.
     - If it has content, append the new summary with today's date.
 3.  **Stage changes**: Run `git add .` to stage all modifications.

@@ -271,7 +271,11 @@ void refreshLine() {
 
 void installHooks() {
   esp_netif_t* eth_netif = ETH.netif();
+#if ESP_ARDUINO_VERSION < ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+  esp_netif_t* ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+#else
   esp_netif_t* ap_netif = WiFi.AP.netif();
+#endif
 
   if (eth_netif && orig_eth_input == NULL) {
     struct netif* lwip_eth = (struct netif*)esp_netif_get_netif_impl(eth_netif);
@@ -408,7 +412,7 @@ void initLVGLUI() {
   /* Title */
   lv_obj_t *title = lv_label_create(scr);
   lv_label_set_text(title, "ETH2AP Bridge");
-  lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_YELLOW), 0);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
 
@@ -652,15 +656,19 @@ void handleShell() {
       Serial.print("  restart         - Reboot system\r\n");
       Serial.print("  set_ssid <ssid> - Change WiFi AP SSID\r\n");
       Serial.print("  set_pw <pass>   - Change WiFi AP Password\r\n");
+#ifdef ENABLE_ETHERNET
       Serial.print("  stats           - Show interface statistics (Bytes/Packets)\r\n");
       Serial.print("  traffic [on/off]- Show NAT sessions (if on, periodically shows speed)\r\n");
+#endif
       Serial.print("  ping <host>     - Ping a host (domain or IP)\r\n");
       Serial.print("  ifconfig        - Show network interface configurations\r\n");
       Serial.print("  arp             - Show connected AP clients (MAC/RSSI)\r\n");
+#ifdef ENABLE_ETHERNET
       Serial.print("  dhcp            - Show DHCP server leases (IP/MAC mappings)\r\n");
       Serial.print("  iperf <start|stop>- Start/stop TCP iPerf Server (Port 5001)\r\n");
       Serial.print("  udp_iperf <start|stop>- Start/stop UDP Speed Test (Port 5002)\r\n");
       Serial.print("  toe_iperf <start|stop> [-s | -c ip] - Start/stop W5500 TOE Speed Test\r\n");
+#endif
       Serial.print("\r\n");
     } 
     else if (cmd.equalsIgnoreCase("status")) {
@@ -789,6 +797,7 @@ void handleShell() {
         Serial.print("Error: Password must be at least 8 characters. Usage: set_pw <pass>\r\n");
       }
     } 
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("stats")) {
       Serial.println("\r\n--- Interface Statistics (Live) ---");
       Serial.printf("Free RAM: %u KB, Min: %u KB\r\n", ESP.getFreeHeap() / 1024, ESP.getMinFreeHeap() / 1024);
@@ -803,6 +812,8 @@ void handleShell() {
       
       Serial.println("-----------------------------------\r\n");
     }
+#endif
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("traffic")) {
       if (arg.equalsIgnoreCase("on")) {
         traffic_log_enabled = true;
@@ -825,6 +836,7 @@ void handleShell() {
         Serial.println("--------------------------\r\n");
       }
     }
+#endif
     else if (cmd.equalsIgnoreCase("ping")) {
       if (arg.length() > 0) {
         ping_target = arg;
@@ -835,6 +847,7 @@ void handleShell() {
         Serial.print("Usage: ping <host>\r\n");
       }
     }
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("ifconfig") || cmd.equalsIgnoreCase("ip")) {
       Serial.print("\r\n--- Interface Configuration ---\r\n");
       Serial.println("[ETH] Ethernet Interface:");
@@ -855,6 +868,7 @@ void handleShell() {
       }
       Serial.print("-------------------------------\r\n");
     }
+#endif
     else if (cmd.equalsIgnoreCase("arp")) {
       Serial.print("\r\n--- AP ARP / Station List ---\r\n");
       wifi_sta_list_t stationList;
@@ -872,9 +886,14 @@ void handleShell() {
       }
       Serial.print("-----------------------------\r\n");
     }
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("dhcp")) {
       Serial.print("\r\n--- AP DHCP Leases ---\r\n");
+#if ESP_ARDUINO_VERSION < ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+      esp_netif_t* ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+#else
       esp_netif_t* ap_netif = WiFi.AP.netif();
+#endif
       wifi_sta_list_t stationList;
       esp_wifi_ap_get_sta_list(&stationList);
 
@@ -916,6 +935,8 @@ void handleShell() {
       }
       Serial.print("----------------------\r\n");
     }
+#endif
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("iperf")) {
       if (arg.equalsIgnoreCase("start")) {
         if (lwiperf_session != NULL) {
@@ -940,6 +961,8 @@ void handleShell() {
         Serial.println("Usage: iperf <start|stop>");
       }
     }
+#endif
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("toe_iperf")) {
       if (arg.startsWith("start")) {
         if(toe_iperf_is_running()) {
@@ -1016,6 +1039,8 @@ void handleShell() {
         Serial.println("Usage: toe_iperf <start|stop> [-s | -c ip_address]");
       }
     }
+#endif
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("bridge")) {
       if (arg.startsWith("start")) {
         if(socket_bridge_is_running() || toe_iperf_is_running()) {
@@ -1080,6 +1105,8 @@ void handleShell() {
         Serial.println("       bridge stop");
       }
     }
+#endif
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("udp_iperf")) {
       if (arg.equalsIgnoreCase("start")) {
         if (udp_iperf_running) {
@@ -1108,6 +1135,7 @@ void handleShell() {
         Serial.println("Usage: udp_iperf <start|stop>");
       }
     }
+#endif
     else {
       Serial.printf("Unknown command: %s. Type 'help' for list.\r\n", cmd.c_str());
     }
@@ -1127,6 +1155,7 @@ void handleShell() {
  */
 void NetworkEvent(arduino_event_id_t event) {
   switch (event) {
+#ifdef ENABLE_ETHERNET
   case ARDUINO_EVENT_ETH_START:
     logMsg(LOG_INFO, "ETH Started");
     ETH.setHostname("eth2ap-bridge");
@@ -1165,6 +1194,7 @@ void NetworkEvent(arduino_event_id_t event) {
     logMsg(LOG_INFO, "ETH Stopped");
     eth_connected = false;
     break;
+#endif
 
   case ARDUINO_EVENT_WIFI_AP_START:
     logMsg(LOG_INFO, "WiFi AP Started (SSID: %s, IP: %s)", ap_ssid_custom.c_str(), WiFi.softAPIP().toString().c_str());
@@ -1275,6 +1305,7 @@ void setup() {
 #endif
 
   // Step 8: Initialize Ethernet
+#ifdef ENABLE_ETHERNET
   logMsg(LOG_INFO, "Step 8: Initializing Ethernet...");
 
 #if CONFIG_IDF_TARGET_ESP32
@@ -1292,6 +1323,9 @@ void setup() {
   
   // Final Step: Install Hooks
   installHooks(); 
+#else
+  logMsg(LOG_WARN, "Step 8: Ethernet Feature Disabled (#define ENABLE_ETHERNET).");
+#endif
 
   Serial.println("Waiting for Ethernet connection to enable internet sharing...");
   logMsg(LOG_INFO, "System ready. Type 'help' for commands.");
@@ -1307,10 +1341,12 @@ void loop() {
 
     if (monitor_enabled) {
       logMsg(LOG_INFO, "----- Status -----");
+#ifdef ENABLE_ETHERNET
       logMsg(LOG_INFO, "Ethernet: %s", eth_connected ? "Connected" : "Disconnected");
       if (eth_connected) {
         logMsg(LOG_INFO, "  IP: %s", ETH.localIP().toString().c_str());
       }
+#endif
       logMsg(LOG_INFO, "WiFi AP : %s", ap_started ? "Running" : "Stopped");
       if (ap_started) {
         logMsg(LOG_INFO, "  Clients: %d", WiFi.softAPgetStationNum());
@@ -1318,6 +1354,7 @@ void loop() {
       logMsg(LOG_INFO, "------------------\r\n");
     }
 
+#ifdef ENABLE_ETHERNET
     if (monitor_traffic) {
         unsigned long now = millis();
         if (now - last_speed_check >= 2000) {
@@ -1327,6 +1364,7 @@ void loop() {
                         formatBytes(ap_stats.rx_bytes).c_str(), formatBytes(ap_stats.tx_bytes).c_str());
         }
     }
+#endif
 
     // Update LCD periodically
     updateLCD();
@@ -1336,6 +1374,7 @@ void loop() {
   handleShell();
 
   // Handle UDP iPerf Reporting
+#ifdef ENABLE_ETHERNET
   if (udp_iperf_running) {
     uint32_t now = millis();
     if (now - udp_iperf_last_print >= 1000) {
@@ -1349,6 +1388,7 @@ void loop() {
       udp_iperf_last_print = now;
     }
   }
+#endif
 
   // Infinite Ping
   if (ping_running) {

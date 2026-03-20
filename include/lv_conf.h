@@ -16,7 +16,7 @@
 #define LV_COLOR_DEPTH 16
 
 /* Swap the 2 bytes of RGB565 color. Useful if the display has an 8-bit interface (e.g. SPI) */
-#define LV_COLOR_16_SWAP 0
+#define LV_COLOR_16_SWAP 1
 
 /*=========================
    MEMORY SETTINGS
@@ -34,7 +34,7 @@
  *====================*/
 
 /* Default display refresh period. LVGL will redraw at most this many times in a second */
-#define LV_DISP_DEF_REFR_PERIOD 30      /*[ms]*/
+#define LV_DISP_DEF_REFR_PERIOD 50      /*[ms] 30→50: CPU 부하 절감*/
 
 /* Default dot per inch. Used by the built-in themes */
 #define LV_DPI_DEF 130                  /*[px/inch]*/
@@ -63,7 +63,7 @@
 
 /* Fill the buffers with something known to see the uninitialized areas */
 #define LV_USE_ASSERT_NULL          1   /* Check if the parameter is NULL. (Quite fast) */
-#define LV_USE_ASSERT_MEM_INTEGRITY 1   /* Check the integrity of `lv_mem`. (Slower) */
+#define LV_USE_ASSERT_MEM_INTEGRITY 0   /* DISABLED: causes INT_WDT on ESP32 (full mem scan every frame) */
 
 /* Default value of the custom data in the widgets */
 #define LV_USE_USER_DATA 1

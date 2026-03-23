@@ -27,7 +27,6 @@
 #include <lvgl.h>    // LVGL Graphic Library
 #include <stdarg.h>  // For va_list
 #include <Preferences.h> // For NVS storage
-#include <esp_netif.h>   // For network statistics
 #include <esp_mac.h>     // For esp_read_mac
 #include <esp_netif_net_stack.h>
 #include <lwip/netif.h>
@@ -38,9 +37,10 @@
 #include <lwip/apps/lwiperf.h>
 #include <AsyncUDP.h>
 #include <inttypes.h>
-#include "toe_iperf.h" 
-#include "socket_bridge.h"
 #include "w5500_base.h"
+#include "soc/gpio_struct.h"
+#include "driver/gpio.h"
+#include "soc/io_mux_reg.h"
 
 // Global Traffic Stats
 struct InterfaceStats {
@@ -370,54 +370,53 @@ static bool ap_started = false;
  * @return true if LCD is detected, false otherwise
  */
 bool detectLCD() {
-  Serial.print("Probing LCD hardware (Register 0x04)... ");
+  Serial.print("Probing LCD hardware... ");
   
-  // Use a local SPI instance to probe without affecting global state
-  SPIClass spi_probe(FSPI); // FSPI is SPI2_HOST on S3
-  spi_probe.begin(LCD_SCLK_PIN, LCD_MISO_PIN, LCD_MOSI_PIN, LCD_CS_PIN);
+  // Use SPI2 (FSPI) to avoid conflict with Ethernet (SPI3)
+  static SPIClass* spi_p = nullptr;
+  if (!spi_p) spi_p = new SPIClass(FSPI); 
+  spi_p->begin(LCD_SCLK_PIN, LCD_MISO_PIN, LCD_MOSI_PIN, LCD_CS_PIN);
   
-  pinMode(LCD_MISO_PIN, INPUT_PULLUP); // Enable Pull-up on MISO
+  pinMode(LCD_MISO_PIN, INPUT_PULLUP);
   pinMode(LCD_CS_PIN, OUTPUT);
   pinMode(LCD_DC_PIN, OUTPUT);
   pinMode(LCD_RST_PIN, OUTPUT);
 
-  // Perform Hardware Reset before probing
+  // Hardware Reset
   digitalWrite(LCD_RST_PIN, LOW);
-  delay(10);
+  delay(100); 
   digitalWrite(LCD_RST_PIN, HIGH);
-  delay(120);
+  delay(200); 
   
   digitalWrite(LCD_CS_PIN, LOW);
+  delay(5); 
   
-  // Try to Read Display ID (0x04)
-  // ST7789/ILI9341 ID: dummy(1bit or 1byte), then ID1, ID2, ID3
-  spi_probe.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  spi_p->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
   
-  // Send Command 0x04
-  digitalWrite(LCD_DC_PIN, LOW);
-  spi_probe.transfer(0x04);
-  
-  // Read Data
-  digitalWrite(LCD_DC_PIN, HIGH);
-  spi_probe.transfer(0x00); // dummy byte
-  uint8_t id1 = spi_probe.transfer(0x00);
-  uint8_t id2 = spi_probe.transfer(0x00);
-  uint8_t id3 = spi_probe.transfer(0x00);
-  
-  spi_probe.endTransaction();
-  digitalWrite(LCD_CS_PIN, HIGH);
-  spi_probe.end(); 
+  // Multiple ID probe (ST7789 requires 1-byte dummy before parameter)
+  auto readID = [&](uint8_t cmd) {
+    digitalWrite(LCD_DC_PIN, LOW); spi_p->transfer(cmd);
+    digitalWrite(LCD_DC_PIN, HIGH);
+    spi_p->transfer(0x00); // Dummy Byte
+    return spi_p->transfer(0x00); // Real ID
+  };
 
-  Serial.printf("ID: %02X %02X %02X -> ", id1, id2, id3);
+  uint8_t id1 = readID(0xDA);
+  uint8_t id2 = readID(0xDB);
+  uint8_t id3 = readID(0xDC);
   
-  // Floating inputs or disconnected miso usually return 0xFF or 0x00
-  if ((id1 == 0xFF || id1 == 0x00) && (id2 == 0xFF || id2 == 0x00) && (id3 == 0xFF || id3 == 0x00)) {
-    Serial.println("LCD Not Detected.");
-    return false;
+  spi_p->endTransaction();
+  digitalWrite(LCD_CS_PIN, HIGH);
+  
+  bool detected = (id1 != 0x00 && id1 != 0xFF) || (id2 != 0x00 && id2 != 0xFF) || (id3 != 0x00 && id3 != 0xFF);
+
+  if (detected) {
+    Serial.printf("Done. LCD Detected (ID:%02X%02X%02X)\n", id1, id2, id3);
+  } else {
+    Serial.println("Failed. LCD not found.");
   }
   
-  Serial.printf("LCD Detected! (Chip ID: %02X%02X%02X)\r\n", id1, id2, id3);
-  return true;
+  return detected;
 }
 
 /**

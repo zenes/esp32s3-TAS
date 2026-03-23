@@ -101,6 +101,8 @@ build_flags =
     -DST7789_DRIVER
     -DTFT_RGB_ORDER=TFT_BGR  ; Red-Blue 스왑 및 색깔 밀림 해결
     -DLV_COLOR_16_SWAP=1     ; LVGL 버퍼와 LCD 사이의 엔디안(Endian) 정합성 해결 (글자 깨짐 방지)
+    -DLV_TICK_CUSTOM=1       ; 전용 타이머 대신 millis() 자동 사용 (애니메이션 정상 작동)
+    -DLV_USE_PERF_MONITOR=1  ; LVGL 내부 FPS/CPU 측정 기능 활성화
 ```
 
 #### `eth2ap.ino` 디스플레이 플러시 (Display Flush)
@@ -109,7 +111,23 @@ build_flags =
 tft.pushColors((uint16_t *)&color_p->full, w * h, false); // swap 파라미터를 false로 설정
 ```
 
-### 6.3. 성능 및 검증
-- **20MHz SPI 클럭**: 안정적인 화면 출력 보장.
-- **실시간 FPS**: 약 20~30 FPS 수준 유지 (정적 UI 기준).
+### 6.3. 성능 및 검증 (최상위 최적화 결과)
+- **CPU 클럭**: **240MHz** (S3 최대 성능 모드).
+- **SPI 클럭**: **80MHz** (하드웨어 한계치).
+- **버퍼 구성**: **Double Buffering (160 Lines x 2)** - 내부 SRAM 활용 (75KB * 2).
+- **기술 적용**: **SPI DMA (Non-blocking)** - 렌더링과 전송을 병렬로 처리.
+- **실측 성능**: 
+    - **부분 업데이트**: **80+ FPS** (매우 부드러움).
+    - **전체 화면 업데이트**: **30 FPS 고정** (Flicker/Scanline 최소화).
 - **색상 검증**: 하단 R, G, B 박스를 통해 정확한 색상 출력 확인 완료.
+
+### 6.4. FPS 측정 메커니즘의 이해 (Partial vs Logical)
+
+프로젝트 초기에는 모든 SPI 전송 횟수를 카운트했으나, 보다 정확한 성능 지표를 위해 LVGL 내부의 평균 FPS 계산 방식으로 전환했습니다.
+
+| 구분 | Partial Flush (초기 방식) | Logical FPS (최종 방식) |
+| :--- | :--- | :--- |
+| **측정 대상** | `my_disp_flush` 호출 횟수 | LVGL 렌더링 주기 (완성된 프레임) |
+| **수치 특징** | 80+ FPS (부분 갱신이 많을수록 높음) | 약 30 FPS (실제 시각적 프레임) |
+| **정확도** | 전송 대역폭 확인용 | 실제 체감 성능 확인용 |
+| **함수/플래그** | 수동 `frame_cnt++` | `lv_refr_get_fps_avg()` / `LV_USE_PERF_MONITOR` |

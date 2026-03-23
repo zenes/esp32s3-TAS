@@ -324,28 +324,36 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
 
-/* LVGL Buffer */
+/* LVGL Buffer (Double buffering for DMA) */
 static lv_disp_draw_buf_t draw_buf;
-static lv_color_t buf[LCD_WIDTH * 20];
+static lv_color_t buf1[LCD_WIDTH * 160];
+static lv_color_t buf2[LCD_WIDTH * 160];
 
 /* UI Objects */
 static lv_obj_t *ui_label_eth;
 static lv_obj_t *ui_label_ap;
 static lv_obj_t *ui_label_clients;
 static lv_obj_t *ui_label_fps;
+static lv_obj_t *ui_test_rect;
 static uint32_t frame_cnt = 0;
 static uint32_t fps_val = 0;
+
+/* Timer callback to force Full Screen UI changes */
+void move_test_rect_cb(lv_timer_t * t) {
+  static uint8_t c = 0;
+  c += 10;
+  lv_obj_set_style_bg_color(lv_scr_act(), lv_color_make(c, 100, 200), 0);
+}
 
 /* Display flushing callback */
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
-  tft.startWrite();
-  tft.setAddrWindow(area->x1, area->y1, w, h);
-  tft.pushColors((uint16_t *)&color_p->full, w * h, false);
-  tft.endWrite();
-  frame_cnt++;
-  lv_disp_flush_ready(disp);
+
+  // Non-blocking DMA push
+  tft.pushImageDMA(area->x1, area->y1, w, h, (uint16_t *)&color_p->full);
+  
+  lv_disp_flush_ready(disp); // Inform LVGL that it can start rendering to the OTHER buffer
 }
 
 // Network state
@@ -487,6 +495,32 @@ void initLVGLUI() {
   ui_label_clients = lv_label_create(scr);
   lv_obj_set_style_text_color(ui_label_clients, lv_palette_lighten(LV_PALETTE_GREY, 1), 0);
   lv_obj_align(ui_label_clients, LV_ALIGN_TOP_LEFT, 10, 110);
+
+  /* Animation Bar for FPS Verification */
+  lv_obj_t *bar = lv_bar_create(scr);
+  lv_obj_set_size(bar, 100, 5);
+  lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, -40);
+  lv_bar_set_range(bar, 0, 100);
+  
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, bar);
+  lv_anim_set_values(&a, 0, 100);
+  lv_anim_set_time(&a, 1000);
+  lv_anim_set_playback_time(&a, 1000);
+  lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_bar_set_value);
+  lv_anim_start(&a);
+
+  /* 30FPS Test Moving Rect */
+  ui_test_rect = lv_obj_create(scr);
+  lv_obj_set_size(ui_test_rect, 15, 15);
+  lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
+  lv_obj_set_style_border_width(ui_test_rect, 0, 0);
+  lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
+  
+  // Create 30Hz timer (1000/30 = 33.3ms)
+  lv_timer_create(move_test_rect_cb, 33, NULL);
 }
 
 /**
@@ -519,17 +553,6 @@ void updateLCD() {
   } else {
     lv_label_set_text(ui_label_ap, "AP: #FF0000 Stopped#");
     lv_label_set_text(ui_label_clients, "");
-  }
-
-  // Update FPS Label periodically
-  static uint32_t last_fps_update = 0;
-  if (millis() - last_fps_update > 1000) {
-    fps_val = frame_cnt;
-    frame_cnt = 0;
-    char buf_fps[16];
-    snprintf(buf_fps, sizeof(buf_fps), "FPS: %u", fps_val);
-    lv_label_set_text(ui_label_fps, buf_fps);
-    last_fps_update = millis();
   }
 #endif
 }
@@ -1331,12 +1354,13 @@ void setup() {
     digitalWrite(LCD_BL_PIN, HIGH); // Turn on backlight
     Serial.println("Done.");
 
-    Serial.print("Step 6: tft.init() and LVGL Setup... ");
+    Serial.print("Step 6: tft.init(), initDMA() and LVGL Setup... ");
     tft.init();
+    tft.initDMA(); // Must be called after tft.init()
     
     /* Initialize LVGL */
     lv_init();
-    lv_disp_draw_buf_init(&draw_buf, buf, NULL, LCD_WIDTH * 20);
+    lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_WIDTH * 160);
 
     /* Initialize the display driver for LVGL */
     static lv_disp_drv_t disp_drv;
@@ -1461,8 +1485,20 @@ void loop() {
     }
   }
 
-  // Update LVGL timer handler
+  // Update LVGL tick and timer handler
   lv_timer_handler();
+
+  // Update FPS Label every 1 second independently
+  static uint32_t last_fps_millis = 0;
+  if (millis() - last_fps_millis >= 1000) {
+    if (lcd_initialized && ui_label_fps) {
+        fps_val = lv_refr_get_fps_avg(); // Use LVGL internal average FPS
+        char buf_fps[16];
+        snprintf(buf_fps, sizeof(buf_fps), "FPS: %u", fps_val);
+        lv_label_set_text(ui_label_fps, buf_fps);
+    }
+    last_fps_millis = millis();
+  }
 
   delay(5);
 }

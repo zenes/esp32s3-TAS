@@ -80,3 +80,36 @@
 ## 5. 최종 권장 사항
 
 이더넷 모듈(W5500) 및 SD 카드를 운용하는 특수 목적의 환경(LilyGO T-ETH-Lite-ESP32S3)에서는, 해상도를 320x240 내외로 유지하고 **핀을 적게 차지하는 SPI 인터페이스(TFT_eSPI 이용, 핀 4~6가닥 사용) 방식의 디스플레이를 활용하는 것이 시스템 안정성과 확장성 측면에서 제일 권장되는 방법**입니다.
+
+---
+
+## 6. T-ETH-Lite-S3 SPI LCD (ST7789) 실전 구동 가이드
+
+프로젝트 진행 과정에서 확인된 최적의 설정값입니다.
+
+### 6.1. 하드웨어 연결 (SPI2 / FSPI 사용)
+이더넷(W5500)과의 SPI 버스 충돌을 방지하기 위해 반드시 **SPI2_HOST (FSPI)**를 사용해야 합니다.
+- **SCK**: IO2, **MOSI**: IO3, **MISO**: IO1, **CS**: IO4
+- **DC**: IO8, **RST**: IO15, **BL**: IO16
+
+### 6.2. 소프트웨어 설정 (PlatformIO / LVGL 8.3)
+색상 뒤바뀜(Color Swap) 및 글자 깨짐 현상을 해결하는 핵심 플래그입니다.
+
+#### `platformio.ini` 설정
+```ini
+build_flags = 
+    -DST7789_DRIVER
+    -DTFT_RGB_ORDER=TFT_BGR  ; Red-Blue 스왑 및 색깔 밀림 해결
+    -DLV_COLOR_16_SWAP=1     ; LVGL 버퍼와 LCD 사이의 엔디안(Endian) 정합성 해결 (글자 깨짐 방지)
+```
+
+#### `eth2ap.ino` 디스플레이 플러시 (Display Flush)
+`LV_COLOR_16_SWAP=1`을 사용할 경우, `TFT_eSPI`의 `pushColors`에서 별도의 바이트 스왑을 수행하지 않아야 합니다.
+```cpp
+tft.pushColors((uint16_t *)&color_p->full, w * h, false); // swap 파라미터를 false로 설정
+```
+
+### 6.3. 성능 및 검증
+- **20MHz SPI 클럭**: 안정적인 화면 출력 보장.
+- **실시간 FPS**: 약 20~30 FPS 수준 유지 (정적 UI 기준).
+- **색상 검증**: 하단 R, G, B 박스를 통해 정확한 색상 출력 확인 완료.

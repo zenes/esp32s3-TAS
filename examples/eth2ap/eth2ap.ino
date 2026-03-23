@@ -332,6 +332,9 @@ static lv_color_t buf[LCD_WIDTH * 20];
 static lv_obj_t *ui_label_eth;
 static lv_obj_t *ui_label_ap;
 static lv_obj_t *ui_label_clients;
+static lv_obj_t *ui_label_fps;
+static uint32_t frame_cnt = 0;
+static uint32_t fps_val = 0;
 
 /* Display flushing callback */
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
@@ -339,8 +342,9 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   uint32_t h = (area->y2 - area->y1 + 1);
   tft.startWrite();
   tft.setAddrWindow(area->x1, area->y1, w, h);
-  tft.pushColors((uint16_t *)&color_p->full, w * h, true);
+  tft.pushColors((uint16_t *)&color_p->full, w * h, false);
   tft.endWrite();
+  frame_cnt++;
   lv_disp_flush_ready(disp);
 }
 
@@ -433,6 +437,32 @@ void initLVGLUI() {
   lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_YELLOW), 0);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
 
+  /* FPS Label */
+  ui_label_fps = lv_label_create(scr);
+  lv_obj_set_style_text_font(ui_label_fps, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(ui_label_fps, lv_palette_main(LV_PALETTE_CYAN), 0);
+  lv_obj_align(ui_label_fps, LV_ALIGN_TOP_RIGHT, -10, 10);
+  lv_label_set_text(ui_label_fps, "FPS: 0");
+
+  /* Color Test Boxes (Bottom) */
+  static lv_color_t test_colors[] = {LV_COLOR_MAKE(255,0,0), LV_COLOR_MAKE(0,255,0), LV_COLOR_MAKE(0,0,255), LV_COLOR_MAKE(255,255,255), LV_COLOR_MAKE(0,0,0)};
+  const char* color_names[] = {"R", "G", "B", "W", "K"};
+  
+  for(int i=0; i<5; i++) {
+    lv_obj_t *box = lv_obj_create(scr);
+    lv_obj_set_size(box, 30, 20);
+    lv_obj_set_style_bg_color(box, test_colors[i], 0);
+    lv_obj_set_style_border_width(box, 1, 0);
+    lv_obj_set_style_border_color(box, lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_align(box, LV_ALIGN_BOTTOM_LEFT, 10 + (i * 35), -10);
+    
+    lv_obj_t *lbl = lv_label_create(box);
+    lv_label_set_text(lbl, color_names[i]);
+    lv_obj_center(lbl);
+    if(i == 3) lv_obj_set_style_text_color(lbl, lv_color_black(), 0); // Black text for White box
+    else lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+  }
+
   /* Separator */
   static lv_point_t line_points[] = {{0, 0}, {LCD_HEIGHT, 0}}; // Landscape orientation
   lv_obj_t *line = lv_line_create(scr);
@@ -489,6 +519,17 @@ void updateLCD() {
   } else {
     lv_label_set_text(ui_label_ap, "AP: #FF0000 Stopped#");
     lv_label_set_text(ui_label_clients, "");
+  }
+
+  // Update FPS Label periodically
+  static uint32_t last_fps_update = 0;
+  if (millis() - last_fps_update > 1000) {
+    fps_val = frame_cnt;
+    frame_cnt = 0;
+    char buf_fps[16];
+    snprintf(buf_fps, sizeof(buf_fps), "FPS: %u", fps_val);
+    lv_label_set_text(ui_label_fps, buf_fps);
+    last_fps_update = millis();
   }
 #endif
 }

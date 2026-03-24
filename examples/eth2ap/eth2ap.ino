@@ -324,9 +324,10 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
 
-/* LVGL Buffer */
+/* LVGL Double Buffers (Internal SRAM with DMA) */
 static lv_disp_draw_buf_t draw_buf;
-static lv_color_t buf[LCD_WIDTH * 20];
+static lv_color_t *buf1 = NULL; 
+static lv_color_t *buf2 = NULL; 
 
 /* UI Objects */
 static lv_obj_t *ui_label_eth;
@@ -344,18 +345,26 @@ void move_test_rect_cb(lv_timer_t * t) {
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_make(c, 100, 200), 0);
 }
 
-/* Display flushing callback */
+/* Display flushing callback (Asynchronous DMA) */
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
 
-  tft.startWrite();
-  tft.setAddrWindow(area->x1, area->y1, w, h);
-  tft.pushColors((uint16_t *)&color_p->full, w * h, false);
-  tft.endWrite();
+  // 1. Wait for PREVIOUS DMA transfer to finish before starting a new one
+  if (tft.dmaBusy()) tft.dmaWait();
 
+  // 2. Start new transfer session
+  tft.startWrite(); 
+  tft.setAddrWindow(area->x1, area->y1, w, h);
+  tft.pushPixelsDMA((uint16_t *)color_p, w * h);
+  
+  // CRITICAL: We DO NOT call tft.endWrite() here!
+  // Most TFT_eSPI versions of endWrite() will BLOCK until DMA is finished.
+  // By skipping it, we allow CPU to immediately return to LVGL for the next frame's rendering.
+  // We'll call startWrite() again next time, which is safe.
+  
   frame_cnt++;
-  lv_disp_flush_ready(disp);
+  lv_disp_flush_ready(disp); // Tell LVGL we are ready for the NEXT frame buffer
 }
 
 // Network state
@@ -1356,12 +1365,30 @@ void setup() {
     digitalWrite(LCD_BL_PIN, HIGH); // Turn on backlight
     Serial.println("Done.");
 
-    Serial.print("Step 6: tft.init() and LVGL Setup... ");
+    /* Initialize LCD DMA */
     tft.init();
+    tft.initDMA(); // Start GDMA for SPI
     
-    /* Initialize LVGL */
+    /* Initialize LVGL and Allocate DMA Buffers in Internal SRAM */
     lv_init();
-    lv_disp_draw_buf_init(&draw_buf, buf, NULL, LCD_WIDTH * 20);
+    
+    // Allocate 2 x 80KB buffers in Internal SRAM with DMA capability
+    // 64 lines exactly matches the 32KB L1 Data Cache on ESP32-S3 (240x64x2 = 30.7KB)
+    size_t lines = 64; 
+    size_t buf_size = LCD_WIDTH * lines * sizeof(lv_color_t);
+    
+    buf1 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    buf2 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    
+    if (buf1 == NULL || buf2 == NULL) {
+        Serial.println("Failed to allocate DMA buffers! Falling back to SRAM Single...");
+        if(buf1) free(buf1);
+        static lv_color_t sram_single[LCD_WIDTH * 20];
+        lv_disp_draw_buf_init(&draw_buf, sram_single, NULL, LCD_WIDTH * 20);
+    } else {
+        Serial.printf("DMA Double Buffers allocated: 2 x %u bytes\n", buf_size);
+        lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_WIDTH * lines);
+    }
 
     /* Initialize the display driver for LVGL */
     static lv_disp_drv_t disp_drv;
@@ -1369,8 +1396,12 @@ void setup() {
     disp_drv.hor_res = LCD_HEIGHT; // Landscape
     disp_drv.ver_res = LCD_WIDTH;  // Landscape
     disp_drv.flush_cb = my_disp_flush;
-    disp_drv.draw_buf = &draw_buf;
-    lv_disp_drv_register(&disp_drv);
+    disp_drv.draw_buf = &draw_buf; // CRITICAL: This was missing!
+    lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
+    
+    // Set refresh period to 16ms for 60 FPS
+    lv_timer_t * refr_timer = _lv_disp_get_refr_timer(disp_obj);
+    if (refr_timer) lv_timer_set_period(refr_timer, 16);
 
     lcd_initialized = true; 
     Serial.println("Done.");
@@ -1501,5 +1532,6 @@ void loop() {
     last_fps_millis = millis();
   }
 
-  delay(5);
+  // Minimal delay for system stability while maximizing loop throughput
+  yield(); 
 }

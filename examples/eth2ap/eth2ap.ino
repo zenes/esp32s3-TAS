@@ -324,10 +324,9 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
 
-/* LVGL Buffer (Double buffering for DMA) */
+/* LVGL Buffer */
 static lv_disp_draw_buf_t draw_buf;
-static lv_color_t buf1[LCD_WIDTH * 160];
-static lv_color_t buf2[LCD_WIDTH * 160];
+static lv_color_t buf[LCD_WIDTH * 20];
 
 /* UI Objects */
 static lv_obj_t *ui_label_eth;
@@ -350,10 +349,13 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
 
-  // Non-blocking DMA push
-  tft.pushImageDMA(area->x1, area->y1, w, h, (uint16_t *)&color_p->full);
-  
-  lv_disp_flush_ready(disp); // Inform LVGL that it can start rendering to the OTHER buffer
+  tft.startWrite();
+  tft.setAddrWindow(area->x1, area->y1, w, h);
+  tft.pushColors((uint16_t *)&color_p->full, w * h, false);
+  tft.endWrite();
+
+  frame_cnt++;
+  lv_disp_flush_ready(disp);
 }
 
 // Network state
@@ -1354,13 +1356,12 @@ void setup() {
     digitalWrite(LCD_BL_PIN, HIGH); // Turn on backlight
     Serial.println("Done.");
 
-    Serial.print("Step 6: tft.init(), initDMA() and LVGL Setup... ");
+    Serial.print("Step 6: tft.init() and LVGL Setup... ");
     tft.init();
-    tft.initDMA(); // Must be called after tft.init()
     
     /* Initialize LVGL */
     lv_init();
-    lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_WIDTH * 160);
+    lv_disp_draw_buf_init(&draw_buf, buf, NULL, LCD_WIDTH * 20);
 
     /* Initialize the display driver for LVGL */
     static lv_disp_drv_t disp_drv;

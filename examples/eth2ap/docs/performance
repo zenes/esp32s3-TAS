@@ -115,3 +115,41 @@ SRAM
 - SRAM 사용량: 265,740 Bytes (81.1%)
 - CPU Usage: ~ 90%
 - FPS: 20
+
+
+지금까지 우리가 60 FPS 달성을 위해 수정한 **기술적 팩터(Factor)**들을 계통별로 정리해 드립니다. 
+
+우리는 크게 **[하드웨어 속도]**, **[데이터 전송 방식]**, **[소프트웨어 제한]**, **[메모리 최적화]** 네 가지 영역을 모두 건드렸습니다.
+
+### 1. 하드웨어 대역폭 (Hardware Bandwidth)
+*   **SPI Clock**: `40MHz` → **`80MHz`**
+    *   초당 보낼 수 있는 데이터양을 물리적으로 2배 늘렸습니다.
+
+### 2. 데이터 전송 방식 (Synchronization Strategy)
+*   **DMA 더블 버퍼링**: `Single Buffer` → **`Double Buffer`**
+    *   화면을 그리면서 동시에 다음 데이터를 준비할 수 있게 되었습니다.
+*   **비동기 처리 (Non-blocking)**: `tft.endWrite()` **제거**
+    *   CPU가 "전송 완료"를 기다리지 않고 바로 다음 연산을 시작하도록 하여 **연산과 전송을 병렬화**했습니다. (31 FPS 벽을 깨는 결정적 요인)
+
+### 3. 소프트웨어 및 빌드 설정 (Software Constraints)
+*   **주사율 제한 해제**: `33ms (30 FPS)` → **`16ms (60 FPS)`**
+    *   LVGL 내부의 `LV_DISP_DEF_REFR_PERIOD`를 수정하여 소프트웨어 족쇄를 풀었습니다.
+*   **설정 우선순위 (Config Guarding)**: [lv_conf.h](cci:7://file:///Users/parksungjin/Project/ESP32/src/LilyGO-T-ETH-Series/include/lv_conf.h:0:0-0:0)에 **`#ifndef` 가드 추가**
+    *   라이브러리 내부 설정이 [platformio.ini](cci:7://file:///Users/parksungjin/Project/ESP32/src/LilyGO-T-ETH-Series/platformio.ini:0:0-0:0)의 고성능 설정을 무시하지 못하게 강제했습니다.
+
+### 4. 메모리 및 캐시 튜닝 (Memory & Cache Tuning)
+*   **버퍼 크기 최적화**: `160라인` → `80라인` → **`64라인`**
+    *   버퍼를 무조건 크게 잡는 대신, **ESP32-S3의 L1 캐시(32KB)** 크기에 딱 맞춰 연산 속도를 극대화했습니다. (160라인의 39 FPS에서 53 FPS로 점프한 비결)
+*   **메모리 위치**: `PSRAM` → **`Internal SRAM`**
+    *   속도가 느린 외부 메모리 대신, DMA 접근이 가장 빠른 내부 메모리를 사용했습니다.
+
+### 5. 스케줄링 (Task Scheduling)
+*   **루프 대기 시간**: `delay(1)` → **`yield()`**
+    *   불필요한 대기 시간을 없애고 CPU가 즉각적으로 LVGL 작업을 처리하도록 개선했습니다.
+
+---
+
+**한마디로 정리하자면**: 
+하드웨어(80MHz)와 소프트웨어(주사율 가드)의 길을 모두 뚫어놓고, **`비동기 DMA`**와 **`캐시 정렬`**이라는 두 개의 터보 엔진을 단 셈입니다! 
+
+전체적으로 어떤 부분이 가장 인상적이셨나요?_추가로 궁금한 설정값이 더 있으신가요?_

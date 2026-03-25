@@ -345,26 +345,65 @@ void move_test_rect_cb(lv_timer_t * t) {
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_make(c, 100, 200), 0);
 }
 
+#define TE_PIN 21
+static SemaphoreHandle_t te_semaphore = NULL;
+
+void IRAM_ATTR te_isr_handler() {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    if (te_semaphore != NULL) {
+        // 이미 차있더라도 덮어씀 (안전한 펄스 기록)
+        xSemaphoreGiveFromISR(te_semaphore, &xHigherPriorityTaskWoken);
+        if (xHigherPriorityTaskWoken) {
+            portYIELD_FROM_ISR();
+        }
+    }
+}
+
 /* Display flushing callback (Asynchronous DMA) */
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
 
-  // 1. Wait for PREVIOUS DMA transfer to finish before starting a new one
-  if (tft.dmaBusy()) tft.dmaWait();
+  static bool transfer_open = false;
 
-  // 2. Start new transfer session
+  // 1. Wait for PREVIOUS DMA transfer to finish, then close the SPI transaction
+  if (transfer_open) {
+    if (tft.dmaBusy()) tft.dmaWait();
+    tft.endWrite(); // Resets CS pin HIGH (SPI Sync reset)
+  }
+
+  // 2. Start new transfer session (CS pin LOW)
   tft.startWrite(); 
   tft.setAddrWindow(area->x1, area->y1, w, h);
+
+  // V-Sync(TE) 강제 대기 코드를 주석 처리 (원래 53 FPS의 논블로킹 속도 복구)
+  // 부분 버퍼(64라인) 구조의 태생적 물리 한계상 이 대기 코드는 프레임레이트를 무조건 떨어뜨리면서도 티어링을 100% 잡지 못함.
+  /*
+  static bool wait_for_te = true;
+  if (wait_for_te && te_semaphore != NULL) {
+      xSemaphoreTake(te_semaphore, pdMS_TO_TICKS(100));
+  }
+  wait_for_te = lv_disp_flush_is_last(disp);
+  */
+
   tft.pushPixelsDMA((uint16_t *)color_p, w * h);
   
   // CRITICAL: We DO NOT call tft.endWrite() here!
-  // Most TFT_eSPI versions of endWrite() will BLOCK until DMA is finished.
-  // By skipping it, we allow CPU to immediately return to LVGL for the next frame's rendering.
-  // We'll call startWrite() again next time, which is safe.
+  // Instead, we mark it open so the NEXT flush closes it to prevent SPI lock-up.
+  transfer_open = true;
   
   frame_cnt++;
   lv_disp_flush_ready(disp); // Tell LVGL we are ready for the NEXT frame buffer
+}
+
+volatile uint32_t last_render_time_ms = 0;
+
+// LVGL 모니터링 콜백 (렌더링 소요 시간 직관적 측정용)
+void my_monitor_cb(lv_disp_drv_t * disp_drv, uint32_t time, uint32_t px) {
+  // 화면 갱신 시 소요된 렌더링 시간을 저장
+  if (time > 0) {
+    last_render_time_ms = time;
+  }
 }
 
 // Network state
@@ -448,6 +487,11 @@ bool detectLCD() {
 void initLVGLUI() {
   lv_obj_t *scr = lv_scr_act();
   lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+  
+  // 화면 잘림 현상을 확인하기 위한 전체 테두리 (디버깅용)
+  lv_obj_set_style_border_color(scr, lv_color_make(255, 255, 255), 0);
+  lv_obj_set_style_border_width(scr, 2, 0);
+  lv_obj_set_style_pad_all(scr, 0, 0); // 패딩 제거로 모서리까지 꽉 차게 변경
 
   /* Title */
   lv_obj_t *title = lv_label_create(scr);
@@ -1367,8 +1411,27 @@ void setup() {
 
     /* Initialize LCD DMA */
     tft.init();
+
+    // ST7789 Frame Rate Control (FRCTRL2: 0xC6) 강제 조작
+    // 다시 50Hz 수준으로 원복 (스캐너 속도를 극단적으로 낮추는 것은 해결책이 아니었음)
+    tft.writecommand(0xC6);
+    tft.writedata(0x15);
+    Serial.println("ST7789 FRCTRL2 Overridden to 0x15 (~50Hz)");
+
+    // ST7789 TE(Tearing Effect) 핀 출력 활성화 (0x35)
+    // 0x00: V-Blanking 펄스만 출력 (가장 일반적인 V-Sync 동기화용 사각파)
+    tft.writecommand(0x35);
+    tft.writedata(0x00);
+    Serial.println("ST7789 TE(Tearing Effect) Pin Output Enabled!");
+
     tft.initDMA(); // Start GDMA for SPI
     
+    // Initialize TE Hardware Interrupt
+    te_semaphore = xSemaphoreCreateBinary();
+    pinMode(TE_PIN, INPUT_PULLDOWN); // 아무것도 안 꽂았을 때 노이즈를 안테나처럼 빨아들이는 것(플로팅) 방지
+    attachInterrupt(TE_PIN, te_isr_handler, RISING);
+    Serial.println("Hardware TE Interrupt Attached to GPIO 21");
+
     /* Initialize LVGL and Allocate DMA Buffers in Internal SRAM */
     lv_init();
     
@@ -1396,6 +1459,7 @@ void setup() {
     disp_drv.hor_res = LCD_HEIGHT; // Landscape
     disp_drv.ver_res = LCD_WIDTH;  // Landscape
     disp_drv.flush_cb = my_disp_flush;
+    disp_drv.monitor_cb = my_monitor_cb; // 추가: 렌더링 성능 모니터링 연결
     disp_drv.draw_buf = &draw_buf; // CRITICAL: This was missing!
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     
@@ -1525,8 +1589,8 @@ void loop() {
   if (millis() - last_fps_millis >= 1000) {
     if (lcd_initialized && ui_label_fps) {
         fps_val = lv_refr_get_fps_avg(); // Use LVGL internal average FPS
-        char buf_fps[16];
-        snprintf(buf_fps, sizeof(buf_fps), "FPS: %u", fps_val);
+        char buf_fps[32]; // 크기 늘림
+        snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %ums", fps_val, last_render_time_ms);
         lv_label_set_text(ui_label_fps, buf_fps);
     }
     last_fps_millis = millis();

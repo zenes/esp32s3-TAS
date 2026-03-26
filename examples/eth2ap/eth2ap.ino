@@ -334,6 +334,12 @@ static lv_obj_t *ui_label_eth;
 static lv_obj_t *ui_label_ap;
 static lv_obj_t *ui_label_clients;
 static lv_obj_t *ui_label_fps;
+#ifdef ENABLE_TE_SYNC
+static lv_obj_t *ui_label_te;
+#endif
+static lv_obj_t *ui_debug_panel;
+static lv_obj_t *ui_label_spi;
+static lv_obj_t *ui_label_tgt_fps;
 static lv_obj_t *ui_test_rect;
 static uint32_t frame_cnt = 0;
 static uint32_t fps_val = 0;
@@ -345,19 +351,30 @@ void move_test_rect_cb(lv_timer_t * t) {
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_make(c, 100, 200), 0);
 }
 
+#ifdef ENABLE_TE_SYNC
 #define TE_PIN 21
 static SemaphoreHandle_t te_semaphore = NULL;
 
+// TE 핀 주파수 측정용 변수 (명령어 사이사이 안전한 읽기를 위해 64비트 타이머 사용)
+volatile int64_t last_te_time_us = 0;
+volatile int64_t te_delta_us = 0;
+
 void IRAM_ATTR te_isr_handler() {
+    int64_t now_us = esp_timer_get_time();
+    if (last_te_time_us > 0) {
+        te_delta_us = now_us - last_te_time_us;
+    }
+    last_te_time_us = now_us;
+
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     if (te_semaphore != NULL) {
-        // 이미 차있더라도 덮어씀 (안전한 펄스 기록)
         xSemaphoreGiveFromISR(te_semaphore, &xHigherPriorityTaskWoken);
         if (xHigherPriorityTaskWoken) {
             portYIELD_FROM_ISR();
         }
     }
 }
+#endif
 
 /* Display flushing callback (Asynchronous DMA) */
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
@@ -368,7 +385,10 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
 
   // 1. Wait for PREVIOUS DMA transfer to finish, then close the SPI transaction
   if (transfer_open) {
-    if (tft.dmaBusy()) tft.dmaWait();
+    if (tft.dmaBusy()) {
+      //delay(1); or yield();
+      tft.dmaWait();
+    }
     tft.endWrite(); // Resets CS pin HIGH (SPI Sync reset)
   }
 
@@ -376,15 +396,14 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   tft.startWrite(); 
   tft.setAddrWindow(area->x1, area->y1, w, h);
 
-  // V-Sync(TE) 강제 대기 코드를 주석 처리 (원래 53 FPS의 논블로킹 속도 복구)
-  // 부분 버퍼(64라인) 구조의 태생적 물리 한계상 이 대기 코드는 프레임레이트를 무조건 떨어뜨리면서도 티어링을 100% 잡지 못함.
-  /*
+#ifdef ENABLE_TE_SYNC
+  // 3. V-Sync(TE) 동기화 복구 (첫 번째 조각 전송 전에만 스캐너 대기)
   static bool wait_for_te = true;
   if (wait_for_te && te_semaphore != NULL) {
-      xSemaphoreTake(te_semaphore, pdMS_TO_TICKS(100));
+      xSemaphoreTake(te_semaphore, pdMS_TO_TICKS(100)); // TE 신호 한 사이클 대기
   }
-  wait_for_te = lv_disp_flush_is_last(disp);
-  */
+  wait_for_te = lv_disp_flush_is_last(disp); // 마지막 조각을 보낼 때 다음 프레임을 위해 대기 락 설정
+#endif
 
   tft.pushPixelsDMA((uint16_t *)color_p, w * h);
   
@@ -499,13 +518,68 @@ void initLVGLUI() {
   lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_YELLOW), 0);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+  lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN); // 숨김
+
+  /* Debug Panel */
+  ui_debug_panel = lv_obj_create(scr);
+  lv_obj_set_size(ui_debug_panel, 175, LV_SIZE_CONTENT);
+  lv_obj_align(ui_debug_panel, LV_ALIGN_RIGHT_MID, -10, 0); // 화면 우측 중앙(y=120)으로 정렬
+  // 디버그 패널 자체는 살리고 내부 글씨들만 골라서 숨김
+  lv_obj_set_style_bg_color(ui_debug_panel, lv_color_make(20, 20, 20), 0); // 어두운 회색/검정
+  lv_obj_set_style_bg_opa(ui_debug_panel, LV_OPA_90, 0); // 약간의 투명도
+  lv_obj_set_style_border_width(ui_debug_panel, 1, 0);
+  lv_obj_set_style_border_color(ui_debug_panel, lv_color_make(70, 70, 70), 0);
+  lv_obj_set_style_pad_all(ui_debug_panel, 8, 0);
+  
+  // 패널 내부를 Flex(세로 정렬) 레이아웃으로 설정
+  lv_obj_set_layout(ui_debug_panel, LV_LAYOUT_FLEX);
+  lv_obj_set_flex_flow(ui_debug_panel, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(ui_debug_panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+  lv_obj_set_style_pad_row(ui_debug_panel, 4, 0); // 줄 간격
+
+  /* Title of Debug Panel */
+  lv_obj_t *debug_title = lv_label_create(ui_debug_panel);
+  lv_label_set_text(debug_title, "DEBUG INFO");
+  lv_obj_set_style_text_font(debug_title, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(debug_title, lv_palette_main(LV_PALETTE_LIGHT_BLUE), 0);
+  lv_obj_add_flag(debug_title, LV_OBJ_FLAG_HIDDEN); // 숨김
 
   /* FPS Label */
-  ui_label_fps = lv_label_create(scr);
+  ui_label_fps = lv_label_create(ui_debug_panel);
   lv_obj_set_style_text_font(ui_label_fps, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(ui_label_fps, lv_palette_main(LV_PALETTE_CYAN), 0);
-  lv_obj_align(ui_label_fps, LV_ALIGN_TOP_RIGHT, -10, 10);
+  lv_obj_set_style_text_color(ui_label_fps, lv_color_white(), 0);
   lv_label_set_text(ui_label_fps, "FPS: 0");
+
+  /* Target FPS Label */
+  ui_label_tgt_fps = lv_label_create(ui_debug_panel);
+  lv_obj_set_style_text_font(ui_label_tgt_fps, &lv_font_montserrat_14, 0); 
+  lv_obj_set_style_text_color(ui_label_tgt_fps, lv_palette_main(LV_PALETTE_ORANGE), 0);
+  lv_obj_add_flag(ui_label_tgt_fps, LV_OBJ_FLAG_HIDDEN); // 숨김
+#ifdef LV_DISP_DEF_REFR_PERIOD
+  lv_label_set_text_fmt(ui_label_tgt_fps, "TGT: %d FPS", 1000 / LV_DISP_DEF_REFR_PERIOD);
+#else
+  lv_label_set_text(ui_label_tgt_fps, "TGT: 33 FPS"); // LVGL 기본 모니터 주기(30ms)
+#endif
+
+  /* SPI Clock Label */
+  ui_label_spi = lv_label_create(ui_debug_panel);
+  lv_obj_set_style_text_font(ui_label_spi, &lv_font_montserrat_14, 0); 
+  lv_obj_set_style_text_color(ui_label_spi, lv_palette_main(LV_PALETTE_LIGHT_GREEN), 0);
+  lv_obj_add_flag(ui_label_spi, LV_OBJ_FLAG_HIDDEN); // 숨김
+#ifdef SPI_FREQUENCY
+  lv_label_set_text_fmt(ui_label_spi, "SPI: %d MHz", SPI_FREQUENCY / 1000000);
+#else
+  lv_label_set_text(ui_label_spi, "SPI: 80 MHz");
+#endif
+
+#ifdef ENABLE_TE_SYNC
+  /* TE Timing Label */
+  ui_label_te = lv_label_create(ui_debug_panel);
+  lv_obj_set_style_text_font(ui_label_te, &lv_font_montserrat_14, 0); 
+  lv_obj_set_style_text_color(ui_label_te, lv_palette_main(LV_PALETTE_YELLOW), 0);
+  // lv_obj_add_flag(ui_label_te, LV_OBJ_FLAG_HIDDEN); // 다시 표시되도록 주석 처리
+  lv_label_set_text(ui_label_te, "TE: --");
+#endif
 
   /* Color Test Boxes (Bottom) */
   static lv_color_t test_colors[] = {LV_COLOR_MAKE(255,0,0), LV_COLOR_MAKE(0,255,0), LV_COLOR_MAKE(0,0,255), LV_COLOR_MAKE(255,255,255), LV_COLOR_MAKE(0,0,0)};
@@ -522,6 +596,7 @@ void initLVGLUI() {
     lv_obj_t *lbl = lv_label_create(box);
     lv_label_set_text(lbl, color_names[i]);
     lv_obj_center(lbl);
+    lv_obj_add_flag(lbl, LV_OBJ_FLAG_HIDDEN); // 숨김
     if(i == 3) lv_obj_set_style_text_color(lbl, lv_color_black(), 0); // Black text for White box
     else lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
   }
@@ -539,17 +614,20 @@ void initLVGLUI() {
   lv_label_set_recolor(ui_label_eth, true);
   lv_obj_set_style_text_color(ui_label_eth, lv_color_white(), 0);
   lv_obj_align(ui_label_eth, LV_ALIGN_TOP_LEFT, 10, 50);
+  lv_obj_add_flag(ui_label_eth, LV_OBJ_FLAG_HIDDEN); // 이더넷 라벨 렌더링 무효화 (Hide)
 
   /* Access Point Label */
   ui_label_ap = lv_label_create(scr);
   lv_label_set_recolor(ui_label_ap, true);
   lv_obj_set_style_text_color(ui_label_ap, lv_color_white(), 0);
   lv_obj_align(ui_label_ap, LV_ALIGN_TOP_LEFT, 10, 80);
+  lv_obj_add_flag(ui_label_ap, LV_OBJ_FLAG_HIDDEN); // 숨김
 
   /* Clients Info */
   ui_label_clients = lv_label_create(scr);
   lv_obj_set_style_text_color(ui_label_clients, lv_palette_lighten(LV_PALETTE_GREY, 1), 0);
   lv_obj_align(ui_label_clients, LV_ALIGN_TOP_LEFT, 10, 110);
+  lv_obj_add_flag(ui_label_clients, LV_OBJ_FLAG_HIDDEN); // 숨김
 
   /* Animation Bar for FPS Verification */
   lv_obj_t *bar = lv_bar_create(scr);
@@ -1412,14 +1490,14 @@ void setup() {
     /* Initialize LCD DMA */
     tft.init();
 
+#ifdef ENABLE_TE_SYNC
     // ST7789 Frame Rate Control (FRCTRL2: 0xC6) 강제 조작
-    // 다시 50Hz 수준으로 원복 (스캐너 속도를 극단적으로 낮추는 것은 해결책이 아니었음)
+    // 스캐너 동작 주기를 하드웨어 기본값인 60Hz(약 16.6ms)로 설정
     tft.writecommand(0xC6);
-    tft.writedata(0x15);
-    Serial.println("ST7789 FRCTRL2 Overridden to 0x15 (~50Hz)");
+    tft.writedata(0x0F); // 0x0F = 60Hz (기본값)
+    Serial.println("ST7789 FRCTRL2 Overridden to 0x0F (60Hz) - TE Sync Enabled");
 
     // ST7789 TE(Tearing Effect) 핀 출력 활성화 (0x35)
-    // 0x00: V-Blanking 펄스만 출력 (가장 일반적인 V-Sync 동기화용 사각파)
     tft.writecommand(0x35);
     tft.writedata(0x00);
     Serial.println("ST7789 TE(Tearing Effect) Pin Output Enabled!");
@@ -1428,9 +1506,15 @@ void setup() {
     
     // Initialize TE Hardware Interrupt
     te_semaphore = xSemaphoreCreateBinary();
-    pinMode(TE_PIN, INPUT_PULLDOWN); // 아무것도 안 꽂았을 때 노이즈를 안테나처럼 빨아들이는 것(플로팅) 방지
+    pinMode(TE_PIN, INPUT_PULLDOWN);
     attachInterrupt(TE_PIN, te_isr_handler, RISING);
     Serial.println("Hardware TE Interrupt Attached to GPIO 21");
+#else
+    // Fast Mode: TE 미사용 및 패널 하드웨어 기본값(보통 60Hz) 그대로 작동하도록 방치
+    Serial.println("ST7789 TE Sync Disabled (Fast Mode - Default Hardware Refresh Rate)");
+    
+    tft.initDMA(); // Start GDMA for SPI
+#endif
 
     /* Initialize LVGL and Allocate DMA Buffers in Internal SRAM */
     lv_init();
@@ -1461,11 +1545,21 @@ void setup() {
     disp_drv.flush_cb = my_disp_flush;
     disp_drv.monitor_cb = my_monitor_cb; // 추가: 렌더링 성능 모니터링 연결
     disp_drv.draw_buf = &draw_buf; // CRITICAL: This was missing!
+    
+    // 강제 전체 업데이트 해제 (부분 업데이트로 복귀하여 프레임레이트 복구)
+    // disp_drv.full_refresh = 1; 
+
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     
-    // Set refresh period to 16ms for 60 FPS
+#ifdef ENABLE_TE_SYNC
+    // Set refresh period to 16ms for 60 FPS (하드웨어 60Hz와 동기화)
     lv_timer_t * refr_timer = _lv_disp_get_refr_timer(disp_obj);
     if (refr_timer) lv_timer_set_period(refr_timer, 16);
+#else
+    // Set refresh period to 16ms for 60 FPS (최대 성능)
+    lv_timer_t * refr_timer = _lv_disp_get_refr_timer(disp_obj);
+    if (refr_timer) lv_timer_set_period(refr_timer, 16);
+#endif
 
     lcd_initialized = true; 
     Serial.println("Done.");
@@ -1593,6 +1687,19 @@ void loop() {
         snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %ums", fps_val, last_render_time_ms);
         lv_label_set_text(ui_label_fps, buf_fps);
     }
+    
+#ifdef ENABLE_TE_SYNC
+    if (lcd_initialized && ui_label_te) {
+        int64_t delta_us = te_delta_us;
+        if (delta_us > 0) {
+            float te_ms = delta_us / 1000.0f;
+            float te_hz = 1000000.0f / delta_us;
+            char buf_te[32];
+            snprintf(buf_te, sizeof(buf_te), "TE: %.1fms(%.1fHz)", te_ms, te_hz);
+            lv_label_set_text(ui_label_te, buf_te);
+        }
+    }
+#endif
     last_fps_millis = millis();
   }
 

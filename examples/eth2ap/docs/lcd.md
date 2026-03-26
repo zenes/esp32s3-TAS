@@ -80,3 +80,54 @@
 ## 5. 최종 권장 사항
 
 이더넷 모듈(W5500) 및 SD 카드를 운용하는 특수 목적의 환경(LilyGO T-ETH-Lite-ESP32S3)에서는, 해상도를 320x240 내외로 유지하고 **핀을 적게 차지하는 SPI 인터페이스(TFT_eSPI 이용, 핀 4~6가닥 사용) 방식의 디스플레이를 활용하는 것이 시스템 안정성과 확장성 측면에서 제일 권장되는 방법**입니다.
+
+---
+
+## 6. T-ETH-Lite-S3 SPI LCD (ST7789) 실전 구동 가이드
+
+프로젝트 진행 과정에서 확인된 최적의 설정값입니다.
+
+### 6.1. 하드웨어 연결 (SPI2 / FSPI 사용)
+이더넷(W5500)과의 SPI 버스 충돌을 방지하기 위해 반드시 **SPI2_HOST (FSPI)**를 사용해야 합니다.
+- **SCK**: IO2, **MOSI**: IO3, **MISO**: IO1, **CS**: IO4
+- **DC**: IO8, **RST**: IO15, **BL**: IO16
+
+### 6.2. 소프트웨어 설정 (PlatformIO / LVGL 8.3)
+색상 뒤바뀜(Color Swap) 및 글자 깨짐 현상을 해결하는 핵심 플래그입니다.
+
+#### `platformio.ini` 설정
+```ini
+build_flags = 
+    -DST7789_DRIVER
+    -DTFT_RGB_ORDER=TFT_BGR  ; Red-Blue 스왑 및 색깔 밀림 해결
+    -DLV_COLOR_16_SWAP=1     ; LVGL 버퍼와 LCD 사이의 엔디안(Endian) 정합성 해결 (글자 깨짐 방지)
+    -DLV_TICK_CUSTOM=1       ; 전용 타이머 대신 millis() 자동 사용 (애니메이션 정상 작동)
+    -DLV_USE_PERF_MONITOR=1  ; LVGL 내부 FPS/CPU 측정 기능 활성화
+```
+
+#### `eth2ap.ino` 디스플레이 플러시 (Display Flush)
+`LV_COLOR_16_SWAP=1`을 사용할 경우, `TFT_eSPI`의 `pushColors`에서 별도의 바이트 스왑을 수행하지 않아야 합니다.
+```cpp
+tft.pushColors((uint16_t *)&color_p->full, w * h, false); // swap 파라미터를 false로 설정
+```
+
+### 6.3. 성능 및 검증 (최상위 최적화 결과)
+- **CPU 클럭**: **240MHz** (S3 최대 성능 모드).
+- **SPI 클럭**: **80MHz** (하드웨어 한계치).
+- **버퍼 구성**: **Double Buffering (160 Lines x 2)** - 내부 SRAM 활용 (75KB * 2).
+- **기술 적용**: **SPI DMA (Non-blocking)** - 렌더링과 전송을 병렬로 처리.
+- **실측 성능**: 
+    - **부분 업데이트**: **80+ FPS** (매우 부드러움).
+    - **전체 화면 업데이트**: **30 FPS 고정** (Flicker/Scanline 최소화).
+- **색상 검증**: 하단 R, G, B 박스를 통해 정확한 색상 출력 확인 완료.
+
+### 6.4. FPS 측정 메커니즘의 이해 (Partial vs Logical)
+
+프로젝트 초기에는 모든 SPI 전송 횟수를 카운트했으나, 보다 정확한 성능 지표를 위해 LVGL 내부의 평균 FPS 계산 방식으로 전환했습니다.
+
+| 구분 | Partial Flush (초기 방식) | Logical FPS (최종 방식) |
+| :--- | :--- | :--- |
+| **측정 대상** | `my_disp_flush` 호출 횟수 | LVGL 렌더링 주기 (완성된 프레임) |
+| **수치 특징** | 80+ FPS (부분 갱신이 많을수록 높음) | 약 30 FPS (실제 시각적 프레임) |
+| **정확도** | 전송 대역폭 확인용 | 실제 체감 성능 확인용 |
+| **함수/플래그** | 수동 `frame_cnt++` | `lv_refr_get_fps_avg()` / `LV_USE_PERF_MONITOR` |

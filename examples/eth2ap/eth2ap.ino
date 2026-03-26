@@ -25,9 +25,9 @@
 #include <rom/rtc.h>    // For rtc_get_reset_reason
 #include <TFT_eSPI.h> // LCD Library
 #include <lvgl.h>    // LVGL Graphic Library
+#include <TAMC_GT911.h> // GT911 Touch Library
 #include <stdarg.h>  // For va_list
 #include <Preferences.h> // For NVS storage
-#include <esp_netif.h>   // For network statistics
 #include <esp_mac.h>     // For esp_read_mac
 #include <esp_netif_net_stack.h>
 #include <lwip/netif.h>
@@ -38,9 +38,10 @@
 #include <lwip/apps/lwiperf.h>
 #include <AsyncUDP.h>
 #include <inttypes.h>
-#include "toe_iperf.h" 
-#include "socket_bridge.h"
 #include "w5500_base.h"
+#include "soc/gpio_struct.h"
+#include "driver/gpio.h"
+#include "soc/io_mux_reg.h"
 
 // Global Traffic Stats
 struct InterfaceStats {
@@ -271,7 +272,11 @@ void refreshLine() {
 
 void installHooks() {
   esp_netif_t* eth_netif = ETH.netif();
+#if ESP_ARDUINO_VERSION < ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+  esp_netif_t* ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+#else
   esp_netif_t* ap_netif = WiFi.AP.netif();
+#endif
 
   if (eth_netif && orig_eth_input == NULL) {
     struct netif* lwip_eth = (struct netif*)esp_netif_get_netif_impl(eth_netif);
@@ -316,28 +321,174 @@ static String tab_prefix = "";
 static enum { ANSI_NONE, ANSI_ESC, ANSI_BRACKET } ansi_state = ANSI_NONE;
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
-#define ENABLE_LCD // Enable logic, but will be checked dynamically
+#define ENABLE_LCD
+#define ENABLE_TE_SYNC
+// #define ENABLE_GRADIENT_BG // 그라데이션 배경 활성화 (기본 OFF)
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
 
-/* LVGL Buffer */
+/* GT911 Touch Instance */
+TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, LCD_WIDTH, LCD_HEIGHT);
+static lv_obj_t * touch_cursor;
+static lv_obj_t * touch_label;
+static lv_obj_t * touch_line_h;
+static lv_obj_t * touch_line_v;
+
+/* LVGL Touchpad Read Callback */
+void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data) {
+    tp.read();
+    if (tp.isTouched) {
+        data->state = LV_INDEV_STATE_PR;
+        
+        // Calibration mapping: 
+        // X: 0 ~ 300 -> 0 ~ 319
+        // Y: 85 ~ 315 -> 0 ~ 239
+        int raw_x = tp.points[0].x;
+        int raw_y = tp.points[0].y;
+        
+        data->point.x = map(raw_x, 0, 300, 0, 319);
+        data->point.y = map(raw_y, 85, 315, 0, 239);
+        
+        // Constrain to screen bounds
+        if (data->point.x < 0) data->point.x = 0;
+        if (data->point.x >= 320) data->point.x = 319;
+        if (data->point.y < 0) data->point.y = 0;
+        if (data->point.y >= 240) data->point.y = 239;
+        
+        // Console output with mapping info
+        Serial.printf("Touch: MapX=%d, MapY=%d (Raw X=%d, Raw Y=%d)\n", 
+            data->point.x, data->point.y, raw_x, raw_y);
+        
+        // Visual feedback (Always On Top Layer)
+        if (touch_cursor) {
+            lv_obj_set_pos(touch_cursor, data->point.x - 5, data->point.y - 5);
+            lv_obj_clear_flag(touch_cursor, LV_OBJ_FLAG_HIDDEN);
+            
+            lv_obj_set_pos(touch_line_h, 0, data->point.y);
+            lv_obj_clear_flag(touch_line_h, LV_OBJ_FLAG_HIDDEN);
+            
+            lv_obj_set_pos(touch_line_v, data->point.x, 0);
+            lv_obj_clear_flag(touch_line_v, LV_OBJ_FLAG_HIDDEN);
+            
+            lv_label_set_text_fmt(touch_label, "X:%d Y:%d", data->point.x, data->point.y);
+            lv_obj_set_pos(touch_label, data->point.x + 15, data->point.y + 15);
+            lv_obj_clear_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
+        }
+    } else {
+        data->state = LV_INDEV_STATE_REL;
+        if (touch_cursor) {
+            lv_obj_add_flag(touch_cursor, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(touch_line_h, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(touch_line_v, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+/* LVGL Double Buffers (Internal SRAM with DMA) */
 static lv_disp_draw_buf_t draw_buf;
-static lv_color_t buf[LCD_WIDTH * 20];
+static lv_color_t *buf1 = NULL; 
+static lv_color_t *buf2 = NULL; 
 
 /* UI Objects */
 static lv_obj_t *ui_label_eth;
 static lv_obj_t *ui_label_ap;
 static lv_obj_t *ui_label_clients;
+static lv_obj_t *ui_label_fps;
+#ifdef ENABLE_TE_SYNC
+static lv_obj_t *ui_label_te;
+#endif
+static lv_obj_t *ui_debug_panel;
+static lv_obj_t *ui_label_spi;
+static lv_obj_t *ui_label_tgt_fps;
+static lv_obj_t *ui_test_rect;
+static uint32_t frame_cnt = 0;
+static uint32_t fps_val = 0;
 
-/* Display flushing callback */
+/* Timer callback to force Full Screen UI changes (Gradient/Color shift logic) */
+#ifdef ENABLE_GRADIENT_BG
+void move_test_rect_cb(lv_timer_t * t) {
+  static uint8_t c = 0;
+  c += 2; // Slower, smoother change
+  lv_obj_t *scr = lv_scr_act();
+  lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
+  lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
+}
+#endif
+
+#ifdef ENABLE_TE_SYNC
+#define TE_PIN 21
+static SemaphoreHandle_t te_semaphore = NULL;
+
+// TE 핀 주파수 측정용 변수 (명령어 사이사이 안전한 읽기를 위해 64비트 타이머 사용)
+volatile int64_t last_te_time_us = 0;
+volatile int64_t te_delta_us = 0;
+
+void IRAM_ATTR te_isr_handler() {
+    int64_t now_us = esp_timer_get_time();
+    if (last_te_time_us > 0) {
+        te_delta_us = now_us - last_te_time_us;
+    }
+    last_te_time_us = now_us;
+
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    if (te_semaphore != NULL) {
+        xSemaphoreGiveFromISR(te_semaphore, &xHigherPriorityTaskWoken);
+        if (xHigherPriorityTaskWoken) {
+            portYIELD_FROM_ISR();
+        }
+    }
+}
+#endif
+
+/* Display flushing callback (Asynchronous DMA) */
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
-  tft.startWrite();
+
+  static bool transfer_open = false;
+
+  // 1. Wait for PREVIOUS DMA transfer to finish, then close the SPI transaction
+  if (transfer_open) {
+    if (tft.dmaBusy()) {
+      //delay(1); or yield();
+      tft.dmaWait();
+    }
+    tft.endWrite(); // Resets CS pin HIGH (SPI Sync reset)
+  }
+
+  // 2. Start new transfer session (CS pin LOW)
+  tft.startWrite(); 
   tft.setAddrWindow(area->x1, area->y1, w, h);
-  tft.pushColors((uint16_t *)&color_p->full, w * h, true);
-  tft.endWrite();
-  lv_disp_flush_ready(disp);
+
+#ifdef ENABLE_TE_SYNC
+  // 3. V-Sync(TE) 동기화 복구 (첫 번째 조각 전송 전에만 스캐너 대기)
+  static bool wait_for_te = true;
+  if (wait_for_te && te_semaphore != NULL) {
+      xSemaphoreTake(te_semaphore, pdMS_TO_TICKS(100)); // TE 신호 한 사이클 대기
+  }
+  wait_for_te = lv_disp_flush_is_last(disp); // 마지막 조각을 보낼 때 다음 프레임을 위해 대기 락 설정
+#endif
+
+  tft.pushPixelsDMA((uint16_t *)color_p, w * h);
+  
+  // CRITICAL: We DO NOT call tft.endWrite() here!
+  // Instead, we mark it open so the NEXT flush closes it to prevent SPI lock-up.
+  transfer_open = true;
+  
+  frame_cnt++;
+  lv_disp_flush_ready(disp); // Tell LVGL we are ready for the NEXT frame buffer
+}
+
+volatile uint32_t last_render_time_ms = 0;
+
+// LVGL 모니터링 콜백 (렌더링 소요 시간 직관적 측정용)
+void my_monitor_cb(lv_disp_drv_t * disp_drv, uint32_t time, uint32_t px) {
+  // 화면 갱신 시 소요된 렌더링 시간을 저장
+  if (time > 0) {
+    last_render_time_ms = time;
+  }
 }
 
 // Network state
@@ -367,35 +518,52 @@ static bool ap_started = false;
  */
 bool detectLCD() {
   Serial.print("Probing LCD hardware... ");
-  // Use a local SPI instance to probe without affecting global state
-  SPIClass spi_probe(FSPI); // FSPI is SPI2_HOST on S3
-  spi_probe.begin(LCD_SCLK_PIN, LCD_MISO_PIN, LCD_MOSI_PIN, LCD_CS_PIN);
   
+  // Use SPI2 (FSPI) to avoid conflict with Ethernet (SPI3)
+  static SPIClass* spi_p = nullptr;
+  if (!spi_p) spi_p = new SPIClass(FSPI); 
+  spi_p->begin(LCD_SCLK_PIN, LCD_MISO_PIN, LCD_MOSI_PIN, LCD_CS_PIN);
+  
+  pinMode(LCD_MISO_PIN, INPUT_PULLUP);
   pinMode(LCD_CS_PIN, OUTPUT);
-  digitalWrite(LCD_CS_PIN, LOW);
-  
-  // Try to Read Display ID (0x04)
-  // ST7789/ILI9341 ID: dummy, then ID1, ID2, ID3
-  spi_probe.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-  spi_probe.transfer(0x04);
-  spi_probe.transfer(0x00); // dummy
-  uint8_t id1 = spi_probe.transfer(0x00);
-  uint8_t id2 = spi_probe.transfer(0x00);
-  uint8_t id3 = spi_probe.transfer(0x00);
-  spi_probe.endTransaction();
-  
-  digitalWrite(LCD_CS_PIN, HIGH);
-  spi_probe.end(); 
+  pinMode(LCD_DC_PIN, OUTPUT);
+  pinMode(LCD_RST_PIN, OUTPUT);
 
-  Serial.printf("ID: %02X %02X %02X -> ", id1, id2, id3);
+  // Hardware Reset
+  digitalWrite(LCD_RST_PIN, LOW);
+  delay(100); 
+  digitalWrite(LCD_RST_PIN, HIGH);
+  delay(200); 
   
-  // Floating PINs usually return 0xFF or 0x00
-  if ((id1 == 0xFF || id1 == 0x00) && (id2 == 0xFF || id2 == 0x00)) {
-    Serial.println("Not Found.");
-    return false;
+  digitalWrite(LCD_CS_PIN, LOW);
+  delay(5); 
+  
+  spi_p->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  
+  // Multiple ID probe (ST7789 requires 1-byte dummy before parameter)
+  auto readID = [&](uint8_t cmd) {
+    digitalWrite(LCD_DC_PIN, LOW); spi_p->transfer(cmd);
+    digitalWrite(LCD_DC_PIN, HIGH);
+    spi_p->transfer(0x00); // Dummy Byte
+    return spi_p->transfer(0x00); // Real ID
+  };
+
+  uint8_t id1 = readID(0xDA);
+  uint8_t id2 = readID(0xDB);
+  uint8_t id3 = readID(0xDC);
+  
+  spi_p->endTransaction();
+  digitalWrite(LCD_CS_PIN, HIGH);
+  
+  bool detected = (id1 != 0x00 && id1 != 0xFF) || (id2 != 0x00 && id2 != 0xFF) || (id3 != 0x00 && id3 != 0xFF);
+
+  if (detected) {
+    Serial.printf("Done. LCD Detected (ID:%02X%02X%02X)\n", id1, id2, id3);
+  } else {
+    Serial.println("Failed. LCD not found.");
   }
-  Serial.println("Found!");
-  return true;
+  
+  return detected;
 }
 
 /**
@@ -405,12 +573,105 @@ void initLVGLUI() {
   lv_obj_t *scr = lv_scr_act();
   lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
 
+#ifdef ENABLE_GRADIENT_BG
+  lv_obj_set_style_bg_color(scr, lv_palette_main(LV_PALETTE_BLUE), 0);
+  lv_obj_set_style_bg_grad_color(scr, lv_palette_main(LV_PALETTE_PURPLE), 0);
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
+#endif
+  
+  // 화면 잘림 현상을 확인하기 위한 전체 테두리 (디버깅용)
+  lv_obj_set_style_border_color(scr, lv_color_make(255, 255, 255), 0);
+  lv_obj_set_style_border_width(scr, 2, 0);
+  lv_obj_set_style_pad_all(scr, 0, 0); // 패딩 제거로 모서리까지 꽉 차게 변경
+
   /* Title */
   lv_obj_t *title = lv_label_create(scr);
   lv_label_set_text(title, "ETH2AP Bridge");
-  lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_YELLOW), 0);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+  lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN); // 숨김
+
+  /* Debug Panel */
+  ui_debug_panel = lv_obj_create(scr);
+  lv_obj_set_size(ui_debug_panel, 175, LV_SIZE_CONTENT);
+  lv_obj_align(ui_debug_panel, LV_ALIGN_RIGHT_MID, -10, 0); // 화면 우측 중앙(y=120)으로 정렬
+  // 디버그 패널 자체는 살리고 내부 글씨들만 골라서 숨김
+  lv_obj_set_style_bg_color(ui_debug_panel, lv_color_make(20, 20, 20), 0); // 어두운 회색/검정
+  lv_obj_set_style_bg_opa(ui_debug_panel, LV_OPA_90, 0); // 약간의 투명도
+  lv_obj_set_style_border_width(ui_debug_panel, 1, 0);
+  lv_obj_set_style_border_color(ui_debug_panel, lv_color_make(70, 70, 70), 0);
+  lv_obj_set_style_pad_all(ui_debug_panel, 8, 0);
+  
+  // 패널 내부를 Flex(세로 정렬) 레이아웃으로 설정
+  lv_obj_set_layout(ui_debug_panel, LV_LAYOUT_FLEX);
+  lv_obj_set_flex_flow(ui_debug_panel, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(ui_debug_panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+  lv_obj_set_style_pad_row(ui_debug_panel, 4, 0); // 줄 간격
+
+  /* Title of Debug Panel */
+  lv_obj_t *debug_title = lv_label_create(ui_debug_panel);
+  lv_label_set_text(debug_title, "DEBUG INFO");
+  lv_obj_set_style_text_font(debug_title, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(debug_title, lv_palette_main(LV_PALETTE_LIGHT_BLUE), 0);
+  lv_obj_add_flag(debug_title, LV_OBJ_FLAG_HIDDEN); // 숨김
+
+  /* FPS Label */
+  ui_label_fps = lv_label_create(ui_debug_panel);
+  lv_obj_set_style_text_font(ui_label_fps, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(ui_label_fps, lv_color_white(), 0);
+  lv_label_set_text(ui_label_fps, "FPS: 0");
+
+  /* Target FPS Label */
+  ui_label_tgt_fps = lv_label_create(ui_debug_panel);
+  lv_obj_set_style_text_font(ui_label_tgt_fps, &lv_font_montserrat_14, 0); 
+  lv_obj_set_style_text_color(ui_label_tgt_fps, lv_palette_main(LV_PALETTE_ORANGE), 0);
+  lv_obj_add_flag(ui_label_tgt_fps, LV_OBJ_FLAG_HIDDEN); // 숨김
+#ifdef LV_DISP_DEF_REFR_PERIOD
+  lv_label_set_text_fmt(ui_label_tgt_fps, "TGT: %d FPS", 1000 / LV_DISP_DEF_REFR_PERIOD);
+#else
+  lv_label_set_text(ui_label_tgt_fps, "TGT: 33 FPS"); // LVGL 기본 모니터 주기(30ms)
+#endif
+
+  /* SPI Clock Label */
+  ui_label_spi = lv_label_create(ui_debug_panel);
+  lv_obj_set_style_text_font(ui_label_spi, &lv_font_montserrat_14, 0); 
+  lv_obj_set_style_text_color(ui_label_spi, lv_palette_main(LV_PALETTE_LIGHT_GREEN), 0);
+  lv_obj_add_flag(ui_label_spi, LV_OBJ_FLAG_HIDDEN); // 숨김
+#ifdef SPI_FREQUENCY
+  lv_label_set_text_fmt(ui_label_spi, "SPI: %d MHz", SPI_FREQUENCY / 1000000);
+#else
+  lv_label_set_text(ui_label_spi, "SPI: 80 MHz");
+#endif
+
+#ifdef ENABLE_TE_SYNC
+  /* TE Timing Label */
+  ui_label_te = lv_label_create(ui_debug_panel);
+  lv_obj_set_style_text_font(ui_label_te, &lv_font_montserrat_14, 0); 
+  lv_obj_set_style_text_color(ui_label_te, lv_palette_main(LV_PALETTE_YELLOW), 0);
+  // lv_obj_add_flag(ui_label_te, LV_OBJ_FLAG_HIDDEN); // 다시 표시되도록 주석 처리
+  lv_label_set_text(ui_label_te, "TE: --");
+#endif
+
+  /* Color Test Boxes (Bottom) */
+  static lv_color_t test_colors[] = {LV_COLOR_MAKE(255,0,0), LV_COLOR_MAKE(0,255,0), LV_COLOR_MAKE(0,0,255), LV_COLOR_MAKE(255,255,255), LV_COLOR_MAKE(0,0,0)};
+  const char* color_names[] = {"R", "G", "B", "W", "K"};
+  
+  for(int i=0; i<5; i++) {
+    lv_obj_t *box = lv_obj_create(scr);
+    lv_obj_set_size(box, 30, 20);
+    lv_obj_set_style_bg_color(box, test_colors[i], 0);
+    lv_obj_set_style_border_width(box, 1, 0);
+    lv_obj_set_style_border_color(box, lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_align(box, LV_ALIGN_BOTTOM_LEFT, 10 + (i * 35), -10);
+    
+    lv_obj_t *lbl = lv_label_create(box);
+    lv_label_set_text(lbl, color_names[i]);
+    lv_obj_center(lbl);
+    lv_obj_add_flag(lbl, LV_OBJ_FLAG_HIDDEN); // 숨김
+    if(i == 3) lv_obj_set_style_text_color(lbl, lv_color_black(), 0); // Black text for White box
+    else lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+  }
 
   /* Separator */
   static lv_point_t line_points[] = {{0, 0}, {LCD_HEIGHT, 0}}; // Landscape orientation
@@ -425,17 +686,48 @@ void initLVGLUI() {
   lv_label_set_recolor(ui_label_eth, true);
   lv_obj_set_style_text_color(ui_label_eth, lv_color_white(), 0);
   lv_obj_align(ui_label_eth, LV_ALIGN_TOP_LEFT, 10, 50);
+  lv_obj_add_flag(ui_label_eth, LV_OBJ_FLAG_HIDDEN); // 이더넷 라벨 렌더링 무효화 (Hide)
 
   /* Access Point Label */
   ui_label_ap = lv_label_create(scr);
   lv_label_set_recolor(ui_label_ap, true);
   lv_obj_set_style_text_color(ui_label_ap, lv_color_white(), 0);
   lv_obj_align(ui_label_ap, LV_ALIGN_TOP_LEFT, 10, 80);
+  lv_obj_add_flag(ui_label_ap, LV_OBJ_FLAG_HIDDEN); // 숨김
 
   /* Clients Info */
   ui_label_clients = lv_label_create(scr);
   lv_obj_set_style_text_color(ui_label_clients, lv_palette_lighten(LV_PALETTE_GREY, 1), 0);
   lv_obj_align(ui_label_clients, LV_ALIGN_TOP_LEFT, 10, 110);
+  lv_obj_add_flag(ui_label_clients, LV_OBJ_FLAG_HIDDEN); // 숨김
+
+  /* Animation Bar for FPS Verification */
+  lv_obj_t *bar = lv_bar_create(scr);
+  lv_obj_set_size(bar, 100, 5);
+  lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, -40);
+  lv_bar_set_range(bar, 0, 100);
+  
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, bar);
+  lv_anim_set_values(&a, 0, 100);
+  lv_anim_set_time(&a, 1000);
+  lv_anim_set_playback_time(&a, 1000);
+  lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_bar_set_value);
+  lv_anim_start(&a);
+
+#ifdef ENABLE_GRADIENT_BG
+  /* 30FPS Test Moving Rect & Gradient Animation */
+  ui_test_rect = lv_obj_create(scr);
+  lv_obj_set_size(ui_test_rect, 15, 15);
+  lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
+  lv_obj_set_style_border_width(0, 0, 0);
+  lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
+  
+  // Create 30Hz timer (1000/30 = 33.3ms)
+  lv_timer_create(move_test_rect_cb, 33, NULL);
+#endif
 }
 
 /**
@@ -652,15 +944,19 @@ void handleShell() {
       Serial.print("  restart         - Reboot system\r\n");
       Serial.print("  set_ssid <ssid> - Change WiFi AP SSID\r\n");
       Serial.print("  set_pw <pass>   - Change WiFi AP Password\r\n");
+#ifdef ENABLE_ETHERNET
       Serial.print("  stats           - Show interface statistics (Bytes/Packets)\r\n");
       Serial.print("  traffic [on/off]- Show NAT sessions (if on, periodically shows speed)\r\n");
+#endif
       Serial.print("  ping <host>     - Ping a host (domain or IP)\r\n");
       Serial.print("  ifconfig        - Show network interface configurations\r\n");
       Serial.print("  arp             - Show connected AP clients (MAC/RSSI)\r\n");
+#ifdef ENABLE_ETHERNET
       Serial.print("  dhcp            - Show DHCP server leases (IP/MAC mappings)\r\n");
       Serial.print("  iperf <start|stop>- Start/stop TCP iPerf Server (Port 5001)\r\n");
       Serial.print("  udp_iperf <start|stop>- Start/stop UDP Speed Test (Port 5002)\r\n");
       Serial.print("  toe_iperf <start|stop> [-s | -c ip] - Start/stop W5500 TOE Speed Test\r\n");
+#endif
       Serial.print("\r\n");
     } 
     else if (cmd.equalsIgnoreCase("status")) {
@@ -789,6 +1085,7 @@ void handleShell() {
         Serial.print("Error: Password must be at least 8 characters. Usage: set_pw <pass>\r\n");
       }
     } 
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("stats")) {
       Serial.println("\r\n--- Interface Statistics (Live) ---");
       Serial.printf("Free RAM: %u KB, Min: %u KB\r\n", ESP.getFreeHeap() / 1024, ESP.getMinFreeHeap() / 1024);
@@ -803,6 +1100,8 @@ void handleShell() {
       
       Serial.println("-----------------------------------\r\n");
     }
+#endif
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("traffic")) {
       if (arg.equalsIgnoreCase("on")) {
         traffic_log_enabled = true;
@@ -825,6 +1124,7 @@ void handleShell() {
         Serial.println("--------------------------\r\n");
       }
     }
+#endif
     else if (cmd.equalsIgnoreCase("ping")) {
       if (arg.length() > 0) {
         ping_target = arg;
@@ -835,6 +1135,7 @@ void handleShell() {
         Serial.print("Usage: ping <host>\r\n");
       }
     }
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("ifconfig") || cmd.equalsIgnoreCase("ip")) {
       Serial.print("\r\n--- Interface Configuration ---\r\n");
       Serial.println("[ETH] Ethernet Interface:");
@@ -855,6 +1156,7 @@ void handleShell() {
       }
       Serial.print("-------------------------------\r\n");
     }
+#endif
     else if (cmd.equalsIgnoreCase("arp")) {
       Serial.print("\r\n--- AP ARP / Station List ---\r\n");
       wifi_sta_list_t stationList;
@@ -872,9 +1174,14 @@ void handleShell() {
       }
       Serial.print("-----------------------------\r\n");
     }
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("dhcp")) {
       Serial.print("\r\n--- AP DHCP Leases ---\r\n");
+#if ESP_ARDUINO_VERSION < ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+      esp_netif_t* ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+#else
       esp_netif_t* ap_netif = WiFi.AP.netif();
+#endif
       wifi_sta_list_t stationList;
       esp_wifi_ap_get_sta_list(&stationList);
 
@@ -916,6 +1223,8 @@ void handleShell() {
       }
       Serial.print("----------------------\r\n");
     }
+#endif
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("iperf")) {
       if (arg.equalsIgnoreCase("start")) {
         if (lwiperf_session != NULL) {
@@ -940,6 +1249,8 @@ void handleShell() {
         Serial.println("Usage: iperf <start|stop>");
       }
     }
+#endif
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("toe_iperf")) {
       if (arg.startsWith("start")) {
         if(toe_iperf_is_running()) {
@@ -1016,6 +1327,8 @@ void handleShell() {
         Serial.println("Usage: toe_iperf <start|stop> [-s | -c ip_address]");
       }
     }
+#endif
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("bridge")) {
       if (arg.startsWith("start")) {
         if(socket_bridge_is_running() || toe_iperf_is_running()) {
@@ -1080,6 +1393,8 @@ void handleShell() {
         Serial.println("       bridge stop");
       }
     }
+#endif
+#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("udp_iperf")) {
       if (arg.equalsIgnoreCase("start")) {
         if (udp_iperf_running) {
@@ -1108,6 +1423,7 @@ void handleShell() {
         Serial.println("Usage: udp_iperf <start|stop>");
       }
     }
+#endif
     else {
       Serial.printf("Unknown command: %s. Type 'help' for list.\r\n", cmd.c_str());
     }
@@ -1127,6 +1443,7 @@ void handleShell() {
  */
 void NetworkEvent(arduino_event_id_t event) {
   switch (event) {
+#ifdef ENABLE_ETHERNET
   case ARDUINO_EVENT_ETH_START:
     logMsg(LOG_INFO, "ETH Started");
     ETH.setHostname("eth2ap-bridge");
@@ -1165,6 +1482,7 @@ void NetworkEvent(arduino_event_id_t event) {
     logMsg(LOG_INFO, "ETH Stopped");
     eth_connected = false;
     break;
+#endif
 
   case ARDUINO_EVENT_WIFI_AP_START:
     logMsg(LOG_INFO, "WiFi AP Started (SSID: %s, IP: %s)", ap_ssid_custom.c_str(), WiFi.softAPIP().toString().c_str());
@@ -1243,12 +1561,55 @@ void setup() {
     digitalWrite(LCD_BL_PIN, HIGH); // Turn on backlight
     Serial.println("Done.");
 
-    Serial.print("Step 6: tft.init() and LVGL Setup... ");
+    /* Initialize LCD DMA */
     tft.init();
+
+#ifdef ENABLE_TE_SYNC
+    // ST7789 Frame Rate Control (FRCTRL2: 0xC6) 강제 조작
+    // 스캐너 동작 주기를 하드웨어 기본값인 60Hz(약 16.6ms)로 설정
+    tft.writecommand(0xC6);
+    tft.writedata(0x0F); // 0x0F = 60Hz (기본값)
+    Serial.println("ST7789 FRCTRL2 Overridden to 0x0F (60Hz) - TE Sync Enabled");
+
+    // ST7789 TE(Tearing Effect) 핀 출력 활성화 (0x35)
+    tft.writecommand(0x35);
+    tft.writedata(0x00);
+    Serial.println("ST7789 TE(Tearing Effect) Pin Output Enabled!");
+
+    tft.initDMA(); // Start GDMA for SPI
     
-    /* Initialize LVGL */
+    // Initialize TE Hardware Interrupt
+    te_semaphore = xSemaphoreCreateBinary();
+    pinMode(TE_PIN, INPUT_PULLDOWN);
+    attachInterrupt(TE_PIN, te_isr_handler, RISING);
+    Serial.println("Hardware TE Interrupt Attached to GPIO 21");
+#else
+    // Fast Mode: TE 미사용 및 패널 하드웨어 기본값(보통 60Hz) 그대로 작동하도록 방치
+    Serial.println("ST7789 TE Sync Disabled (Fast Mode - Default Hardware Refresh Rate)");
+    
+    tft.initDMA(); // Start GDMA for SPI
+#endif
+
+    /* Initialize LVGL and Allocate DMA Buffers in Internal SRAM */
     lv_init();
-    lv_disp_draw_buf_init(&draw_buf, buf, NULL, LCD_WIDTH * 20);
+    
+    // Allocate 2 x 80KB buffers in Internal SRAM with DMA capability
+    // 64 lines exactly matches the 32KB L1 Data Cache on ESP32-S3 (240x64x2 = 30.7KB)
+    size_t lines = 64; 
+    size_t buf_size = LCD_WIDTH * lines * sizeof(lv_color_t);
+    
+    buf1 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    buf2 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    
+    if (buf1 == NULL || buf2 == NULL) {
+        Serial.println("Failed to allocate DMA buffers! Falling back to SRAM Single...");
+        if(buf1) free(buf1);
+        static lv_color_t sram_single[LCD_WIDTH * 20];
+        lv_disp_draw_buf_init(&draw_buf, sram_single, NULL, LCD_WIDTH * 20);
+    } else {
+        Serial.printf("DMA Double Buffers allocated: 2 x %u bytes\n", buf_size);
+        lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_WIDTH * lines);
+    }
 
     /* Initialize the display driver for LVGL */
     static lv_disp_drv_t disp_drv;
@@ -1256,8 +1617,63 @@ void setup() {
     disp_drv.hor_res = LCD_HEIGHT; // Landscape
     disp_drv.ver_res = LCD_WIDTH;  // Landscape
     disp_drv.flush_cb = my_disp_flush;
-    disp_drv.draw_buf = &draw_buf;
-    lv_disp_drv_register(&disp_drv);
+    disp_drv.monitor_cb = my_monitor_cb; // 추가: 렌더링 성능 모니터링 연결
+    disp_drv.draw_buf = &draw_buf; // CRITICAL: This was missing!
+    
+    // 강제 전체 업데이트 해제 (부분 업데이트로 복귀하여 프레임레이트 복구)
+    // disp_drv.full_refresh = 1; 
+
+    lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
+    
+    /* Initialize and Register Touchpad */
+    tp.begin();
+    tp.setRotation(ROTATION_RIGHT); // X축 일치를 위해 RIGHT 모드로 복구
+
+    static lv_indev_drv_t indev_drv;
+    lv_indev_drv_init(&indev_drv);
+    indev_drv.type = LV_INDEV_TYPE_POINTER;
+    indev_drv.read_cb = my_touchpad_read;
+    lv_indev_drv_register(&indev_drv);
+
+    lv_indev_drv_register(&indev_drv);
+
+    /* Create a touch indicator on System Layer (Always on top) */
+    touch_cursor = lv_obj_create(lv_layer_sys());
+    lv_obj_set_size(touch_cursor, 10, 10);
+    lv_obj_set_style_bg_color(touch_cursor, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_set_style_radius(touch_cursor, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(touch_cursor, 0, 0);
+    lv_obj_add_flag(touch_cursor, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_opa(touch_cursor, LV_OPA_70, 0);
+
+    // Horizontal crosshair
+    touch_line_h = lv_obj_create(lv_layer_sys());
+    lv_obj_set_size(touch_line_h, LCD_HEIGHT, 2); // Thicker (2px)
+    lv_obj_set_style_bg_color(touch_line_h, lv_palette_main(LV_PALETTE_LIME), 0);
+    lv_obj_add_flag(touch_line_h, LV_OBJ_FLAG_HIDDEN);
+
+    // Vertical crosshair
+    touch_line_v = lv_obj_create(lv_layer_sys());
+    lv_obj_set_size(touch_line_v, 2, LCD_WIDTH); // Thicker (2px)
+    lv_obj_set_style_bg_color(touch_line_v, lv_palette_main(LV_PALETTE_LIME), 0);
+    lv_obj_add_flag(touch_line_v, LV_OBJ_FLAG_HIDDEN);
+
+    // Coordinate label
+    touch_label = lv_label_create(lv_layer_sys());
+    lv_obj_set_style_text_color(touch_label, lv_palette_main(LV_PALETTE_LIME), 0);
+    lv_obj_set_style_bg_color(touch_label, lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_set_style_bg_opa(touch_label, LV_OPA_50, 0);
+    lv_obj_add_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
+
+#ifdef ENABLE_TE_SYNC
+    // Set refresh period to 16ms for 60 FPS (하드웨어 60Hz와 동기화)
+    lv_timer_t * refr_timer = _lv_disp_get_refr_timer(disp_obj);
+    if (refr_timer) lv_timer_set_period(refr_timer, 16);
+#else
+    // Set refresh period to 16ms for 60 FPS (최대 성능)
+    lv_timer_t * refr_timer = _lv_disp_get_refr_timer(disp_obj);
+    if (refr_timer) lv_timer_set_period(refr_timer, 16);
+#endif
 
     lcd_initialized = true; 
     Serial.println("Done.");
@@ -1275,6 +1691,7 @@ void setup() {
 #endif
 
   // Step 8: Initialize Ethernet
+#ifdef ENABLE_ETHERNET
   logMsg(LOG_INFO, "Step 8: Initializing Ethernet...");
 
 #if CONFIG_IDF_TARGET_ESP32
@@ -1292,6 +1709,9 @@ void setup() {
   
   // Final Step: Install Hooks
   installHooks(); 
+#else
+  logMsg(LOG_WARN, "Step 8: Ethernet Feature Disabled (#define ENABLE_ETHERNET).");
+#endif
 
   Serial.println("Waiting for Ethernet connection to enable internet sharing...");
   logMsg(LOG_INFO, "System ready. Type 'help' for commands.");
@@ -1307,10 +1727,12 @@ void loop() {
 
     if (monitor_enabled) {
       logMsg(LOG_INFO, "----- Status -----");
+#ifdef ENABLE_ETHERNET
       logMsg(LOG_INFO, "Ethernet: %s", eth_connected ? "Connected" : "Disconnected");
       if (eth_connected) {
         logMsg(LOG_INFO, "  IP: %s", ETH.localIP().toString().c_str());
       }
+#endif
       logMsg(LOG_INFO, "WiFi AP : %s", ap_started ? "Running" : "Stopped");
       if (ap_started) {
         logMsg(LOG_INFO, "  Clients: %d", WiFi.softAPgetStationNum());
@@ -1318,6 +1740,7 @@ void loop() {
       logMsg(LOG_INFO, "------------------\r\n");
     }
 
+#ifdef ENABLE_ETHERNET
     if (monitor_traffic) {
         unsigned long now = millis();
         if (now - last_speed_check >= 2000) {
@@ -1327,6 +1750,7 @@ void loop() {
                         formatBytes(ap_stats.rx_bytes).c_str(), formatBytes(ap_stats.tx_bytes).c_str());
         }
     }
+#endif
 
     // Update LCD periodically
     updateLCD();
@@ -1336,6 +1760,7 @@ void loop() {
   handleShell();
 
   // Handle UDP iPerf Reporting
+#ifdef ENABLE_ETHERNET
   if (udp_iperf_running) {
     uint32_t now = millis();
     if (now - udp_iperf_last_print >= 1000) {
@@ -1349,6 +1774,7 @@ void loop() {
       udp_iperf_last_print = now;
     }
   }
+#endif
 
   // Infinite Ping
   if (ping_running) {
@@ -1363,8 +1789,34 @@ void loop() {
     }
   }
 
-  // Update LVGL timer handler
+  // Update LVGL tick and timer handler
   lv_timer_handler();
 
-  delay(5);
+  // Update FPS Label every 1 second independently
+  static uint32_t last_fps_millis = 0;
+  if (millis() - last_fps_millis >= 1000) {
+    if (lcd_initialized && ui_label_fps) {
+        fps_val = lv_refr_get_fps_avg(); // Use LVGL internal average FPS
+        char buf_fps[32]; // 크기 늘림
+        snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %ums", fps_val, last_render_time_ms);
+        lv_label_set_text(ui_label_fps, buf_fps);
+    }
+    
+#ifdef ENABLE_TE_SYNC
+    if (lcd_initialized && ui_label_te) {
+        int64_t delta_us = te_delta_us;
+        if (delta_us > 0) {
+            float te_ms = delta_us / 1000.0f;
+            float te_hz = 1000000.0f / delta_us;
+            char buf_te[32];
+            snprintf(buf_te, sizeof(buf_te), "TE: %.1fms(%.1fHz)", te_ms, te_hz);
+            lv_label_set_text(ui_label_te, buf_te);
+        }
+    }
+#endif
+    last_fps_millis = millis();
+  }
+
+  // Minimal delay for system stability while maximizing loop throughput
+  yield(); 
 }

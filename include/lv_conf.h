@@ -16,7 +16,9 @@
 #define LV_COLOR_DEPTH 16
 
 /* Swap the 2 bytes of RGB565 color. Useful if the display has an 8-bit interface (e.g. SPI) */
+#ifndef LV_COLOR_16_SWAP
 #define LV_COLOR_16_SWAP 1
+#endif
 
 /*=========================
    MEMORY SETTINGS
@@ -34,7 +36,9 @@
  *====================*/
 
 /* Default display refresh period. LVGL will redraw at most this many times in a second */
-#define LV_DISP_DEF_REFR_PERIOD 50      /*[ms] 30→50: CPU 부하 절감*/
+#ifndef LV_DISP_DEF_REFR_PERIOD
+#define LV_DISP_DEF_REFR_PERIOD 33      /*[ms] 10→33: 30 FPS 타겟 설정*/
+#endif
 
 /* Default dot per inch. Used by the built-in themes */
 #define LV_DPI_DEF 130                  /*[px/inch]*/

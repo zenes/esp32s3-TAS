@@ -108,4 +108,3 @@
   #define SPI_FREQUENCY       20000000  // 20MHz - 하드웨어 최적 속도
   #define SPI_READ_FREQUENCY  5000000
 #endif
-#endif

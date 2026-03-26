@@ -208,18 +208,19 @@ static String ap_pw_custom = AP_PASSWORD_BASE;
 Preferences preferences;
 
 // Traffic Monitoring State
-static uint32_t last_eth_rx = 0;
-static uint32_t last_eth_tx = 0;
-static uint32_t last_ap_rx = 0;
-static uint32_t last_ap_tx = 0;
-static unsigned long last_speed_check = 0;
+// static uint32_t last_eth_rx = 0;
+// static uint32_t last_eth_tx = 0;
+// static uint32_t last_ap_rx = 0;
+// static uint32_t last_ap_tx = 0;
+// static unsigned long last_speed_check = 0;
 // Shell & Monitoring Configuration
 static bool monitor_traffic = false;
 static bool monitor_enabled = false;
 static int cursor_pos = 0;
 
 // iPerf State
-static void* lwiperf_session = NULL;
+// static void* lwiperf_session = NULL;
+/*
 static void lwiperf_report(void* arg, enum lwiperf_report_type report_type,
                            const ip_addr_t* local_addr, u16_t local_port, const ip_addr_t* remote_addr, u16_t remote_port,
                            u32_t bytes_transferred, u32_t ms_duration, u32_t bandwidth_kbitpsec) {
@@ -241,16 +242,18 @@ static void lwiperf_report(void* arg, enum lwiperf_report_type report_type,
          lwiperf_session = NULL;
     }
 }
+*/
 
 // UDP iPerf State
 static AsyncUDP udp_iperf_server;
-static bool udp_iperf_running = false;
-static volatile uint32_t udp_iperf_bytes = 0;
-static uint32_t udp_iperf_last_print = 0;
+// static bool udp_iperf_running = false;
+// static uint32_t udp_iperf_last_print = 0;
 
+/*
 static void onUDPPacket(AsyncUDPPacket packet) {
   udp_iperf_bytes += packet.length();
 }
+*/
 
 // Ping State
 static bool ping_running = false;
@@ -401,7 +404,7 @@ static lv_obj_t *ui_label_te;
 static lv_obj_t *ui_debug_panel;
 static lv_obj_t *ui_label_spi;
 static lv_obj_t *ui_label_tgt_fps;
-static lv_obj_t *ui_test_rect;
+// static lv_obj_t *ui_test_rect;
 static uint32_t frame_cnt = 0;
 static uint32_t fps_val = 0;
 
@@ -1796,7 +1799,7 @@ void loop() {
   static uint32_t last_fps_millis = 0;
   if (millis() - last_fps_millis >= 1000) {
     if (lcd_initialized && ui_label_fps) {
-        fps_val = lv_refr_get_fps_avg(); // Use LVGL internal average FPS
+        // fps_val = lv_refr_get_fps_avg(); // Use LVGL internal average FPS
         char buf_fps[32]; // 크기 늘림
         snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %ums", fps_val, last_render_time_ms);
         lv_label_set_text(ui_label_fps, buf_fps);

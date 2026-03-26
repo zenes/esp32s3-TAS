@@ -96,7 +96,7 @@ static void toe_iperf_server_task(void* pvParameters) {
                         mbps = (total_bytes * 8.0) / (duration_ms * 1000.0);
                     }
                     Serial.println("\r\n--- TOE iPerf Server Rx Report (UDP) ---");
-                    Serial.printf("Duration: %lu ms\n", duration_ms);
+                    Serial.printf("Duration: %lu ms\n", (unsigned long)duration_ms);
                     Serial.printf("Transferred: %llu Bytes (%.2f MB)\n", total_bytes, total_bytes/(1024.0*1024.0));
                     Serial.printf("Bandwidth: %.2f Mbps\n", mbps);
                     Serial.println("----------------------------------------");
@@ -114,7 +114,7 @@ static void toe_iperf_server_task(void* pvParameters) {
                     mbps = (total_bytes * 8.0) / (duration_ms * 1000.0);
                 }
                 Serial.println("\r\n--- TOE iPerf Server Rx Report (TCP) ---");
-                Serial.printf("Duration: %lu ms\n", duration_ms);
+                Serial.printf("Duration: %lu ms\n", (unsigned long)duration_ms);
                 Serial.printf("Transferred: %llu Bytes (%.2f MB)\n", total_bytes, total_bytes/(1024.0*1024.0));
                 Serial.printf("Bandwidth: %.2f Mbps\n", mbps);
                 Serial.println("----------------------------------------");
@@ -248,7 +248,7 @@ static void toe_iperf_client_task(void* pvParameters) {
         mbps = (total_bytes * 8.0) / (duration_ms * 1000.0);
     }
     Serial.printf("\r\n--- TOE iPerf Client Tx Report (%s) ---\n", cfg->is_udp ? "UDP" : "TCP");
-    Serial.printf("Duration: %lu ms\n", duration_ms);
+    Serial.printf("Duration: %lu ms\n", (unsigned long)duration_ms);
     Serial.printf("Transferred: %llu Bytes (%.2f MB)\n", total_bytes, total_bytes/(1024.0*1024.0));
     Serial.printf("Bandwidth: %.2f Mbps\n", mbps);
     Serial.println("----------------------------------------");

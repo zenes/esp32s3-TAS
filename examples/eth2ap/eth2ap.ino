@@ -25,6 +25,7 @@
 #include <rom/rtc.h>    // For rtc_get_reset_reason
 #include <TFT_eSPI.h> // LCD Library
 #include <lvgl.h>    // LVGL Graphic Library
+#include <TAMC_GT911.h> // GT911 Touch Library
 #include <stdarg.h>  // For va_list
 #include <Preferences.h> // For NVS storage
 #include <esp_mac.h>     // For esp_read_mac
@@ -320,9 +321,69 @@ static String tab_prefix = "";
 static enum { ANSI_NONE, ANSI_ESC, ANSI_BRACKET } ansi_state = ANSI_NONE;
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
-#define ENABLE_LCD // Enable logic, but will be checked dynamically
+#define ENABLE_LCD
+#define ENABLE_TE_SYNC
+// #define ENABLE_GRADIENT_BG // 그라데이션 배경 활성화 (기본 OFF)
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
+
+/* GT911 Touch Instance */
+TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, LCD_WIDTH, LCD_HEIGHT);
+static lv_obj_t * touch_cursor;
+static lv_obj_t * touch_label;
+static lv_obj_t * touch_line_h;
+static lv_obj_t * touch_line_v;
+
+/* LVGL Touchpad Read Callback */
+void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data) {
+    tp.read();
+    if (tp.isTouched) {
+        data->state = LV_INDEV_STATE_PR;
+        
+        // Calibration mapping: 
+        // X: 0 ~ 300 -> 0 ~ 319
+        // Y: 85 ~ 315 -> 0 ~ 239
+        int raw_x = tp.points[0].x;
+        int raw_y = tp.points[0].y;
+        
+        data->point.x = map(raw_x, 0, 300, 0, 319);
+        data->point.y = map(raw_y, 85, 315, 0, 239);
+        
+        // Constrain to screen bounds
+        if (data->point.x < 0) data->point.x = 0;
+        if (data->point.x >= 320) data->point.x = 319;
+        if (data->point.y < 0) data->point.y = 0;
+        if (data->point.y >= 240) data->point.y = 239;
+        
+        // Console output with mapping info
+        Serial.printf("Touch: MapX=%d, MapY=%d (Raw X=%d, Raw Y=%d)\n", 
+            data->point.x, data->point.y, raw_x, raw_y);
+        
+        // Visual feedback (Always On Top Layer)
+        if (touch_cursor) {
+            lv_obj_set_pos(touch_cursor, data->point.x - 5, data->point.y - 5);
+            lv_obj_clear_flag(touch_cursor, LV_OBJ_FLAG_HIDDEN);
+            
+            lv_obj_set_pos(touch_line_h, 0, data->point.y);
+            lv_obj_clear_flag(touch_line_h, LV_OBJ_FLAG_HIDDEN);
+            
+            lv_obj_set_pos(touch_line_v, data->point.x, 0);
+            lv_obj_clear_flag(touch_line_v, LV_OBJ_FLAG_HIDDEN);
+            
+            lv_label_set_text_fmt(touch_label, "X:%d Y:%d", data->point.x, data->point.y);
+            lv_obj_set_pos(touch_label, data->point.x + 15, data->point.y + 15);
+            lv_obj_clear_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
+        }
+    } else {
+        data->state = LV_INDEV_STATE_REL;
+        if (touch_cursor) {
+            lv_obj_add_flag(touch_cursor, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(touch_line_h, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(touch_line_v, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
 
 /* LVGL Double Buffers (Internal SRAM with DMA) */
 static lv_disp_draw_buf_t draw_buf;
@@ -344,12 +405,17 @@ static lv_obj_t *ui_test_rect;
 static uint32_t frame_cnt = 0;
 static uint32_t fps_val = 0;
 
-/* Timer callback to force Full Screen UI changes */
+/* Timer callback to force Full Screen UI changes (Gradient/Color shift logic) */
+#ifdef ENABLE_GRADIENT_BG
 void move_test_rect_cb(lv_timer_t * t) {
   static uint8_t c = 0;
-  c += 10;
-  lv_obj_set_style_bg_color(lv_scr_act(), lv_color_make(c, 100, 200), 0);
+  c += 2; // Slower, smoother change
+  lv_obj_t *scr = lv_scr_act();
+  lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
+  lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
 }
+#endif
 
 #ifdef ENABLE_TE_SYNC
 #define TE_PIN 21
@@ -506,6 +572,12 @@ bool detectLCD() {
 void initLVGLUI() {
   lv_obj_t *scr = lv_scr_act();
   lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+
+#ifdef ENABLE_GRADIENT_BG
+  lv_obj_set_style_bg_color(scr, lv_palette_main(LV_PALETTE_BLUE), 0);
+  lv_obj_set_style_bg_grad_color(scr, lv_palette_main(LV_PALETTE_PURPLE), 0);
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
+#endif
   
   // 화면 잘림 현상을 확인하기 위한 전체 테두리 (디버깅용)
   lv_obj_set_style_border_color(scr, lv_color_make(255, 255, 255), 0);
@@ -645,15 +717,17 @@ void initLVGLUI() {
   lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_bar_set_value);
   lv_anim_start(&a);
 
-  /* 30FPS Test Moving Rect */
+#ifdef ENABLE_GRADIENT_BG
+  /* 30FPS Test Moving Rect & Gradient Animation */
   ui_test_rect = lv_obj_create(scr);
   lv_obj_set_size(ui_test_rect, 15, 15);
   lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
-  lv_obj_set_style_border_width(ui_test_rect, 0, 0);
+  lv_obj_set_style_border_width(0, 0, 0);
   lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
   
   // Create 30Hz timer (1000/30 = 33.3ms)
   lv_timer_create(move_test_rect_cb, 33, NULL);
+#endif
 }
 
 /**
@@ -1551,6 +1625,46 @@ void setup() {
 
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     
+    /* Initialize and Register Touchpad */
+    tp.begin();
+    tp.setRotation(ROTATION_RIGHT); // X축 일치를 위해 RIGHT 모드로 복구
+
+    static lv_indev_drv_t indev_drv;
+    lv_indev_drv_init(&indev_drv);
+    indev_drv.type = LV_INDEV_TYPE_POINTER;
+    indev_drv.read_cb = my_touchpad_read;
+    lv_indev_drv_register(&indev_drv);
+
+    lv_indev_drv_register(&indev_drv);
+
+    /* Create a touch indicator on System Layer (Always on top) */
+    touch_cursor = lv_obj_create(lv_layer_sys());
+    lv_obj_set_size(touch_cursor, 10, 10);
+    lv_obj_set_style_bg_color(touch_cursor, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_set_style_radius(touch_cursor, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(touch_cursor, 0, 0);
+    lv_obj_add_flag(touch_cursor, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_opa(touch_cursor, LV_OPA_70, 0);
+
+    // Horizontal crosshair
+    touch_line_h = lv_obj_create(lv_layer_sys());
+    lv_obj_set_size(touch_line_h, LCD_HEIGHT, 2); // Thicker (2px)
+    lv_obj_set_style_bg_color(touch_line_h, lv_palette_main(LV_PALETTE_LIME), 0);
+    lv_obj_add_flag(touch_line_h, LV_OBJ_FLAG_HIDDEN);
+
+    // Vertical crosshair
+    touch_line_v = lv_obj_create(lv_layer_sys());
+    lv_obj_set_size(touch_line_v, 2, LCD_WIDTH); // Thicker (2px)
+    lv_obj_set_style_bg_color(touch_line_v, lv_palette_main(LV_PALETTE_LIME), 0);
+    lv_obj_add_flag(touch_line_v, LV_OBJ_FLAG_HIDDEN);
+
+    // Coordinate label
+    touch_label = lv_label_create(lv_layer_sys());
+    lv_obj_set_style_text_color(touch_label, lv_palette_main(LV_PALETTE_LIME), 0);
+    lv_obj_set_style_bg_color(touch_label, lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_set_style_bg_opa(touch_label, LV_OPA_50, 0);
+    lv_obj_add_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
+
 #ifdef ENABLE_TE_SYNC
     // Set refresh period to 16ms for 60 FPS (하드웨어 60Hz와 동기화)
     lv_timer_t * refr_timer = _lv_disp_get_refr_timer(disp_obj);

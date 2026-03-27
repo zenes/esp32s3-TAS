@@ -1,5 +1,11 @@
 # 프로젝트 진행 상황
 
+## 2026-03-27
+- **PSRAM 모드 안정성 검증**: `CONFIG_SPIRAM_MODE_OCT=y` (Octal 모드) 재활성화 및 WiFi softAP와의 공존성 확인 완료.
+- **LCD 드라이버 설정 구조 개선**: `Setup217_LilyGo_ETH_Lite_ESP32S3.h`의 중복 드라이버 선언을 제거하고, `platformio.ini`의 빌드 플래그(`ST7789_DRIVER`)를 통해 단일 소스(Single Source)로 관리하도록 최적화.
+- **커널 패닉(StoreProhibited) 원인 규명**: 패닉의 근본 원인이 PSRAM 모드나 하드웨어 충돌이 아닌, HAL 리팩토링 과정에서의 SPI 직접 프로빙(Probing) 로직이었음을 확인하고 원본 코드로 안정화 완료.
+- **화면 출력 및 시스템 안정화**: 업로드 후 LCD 화면 출력과 터널링 쉘(Shell) 동작이 정상적임을 최종 검증.
+
 ## 2026-03-26
 ### 2026-03-26 (오후): GT911 터치 인터페이스 및 정밀 보정 완료
 *   **터치 컨트롤러 통합**: GT911 (I2C) 드라이버 연동 및 `platformio.ini` 환경 설정 (IO17, 18, 21, 38).

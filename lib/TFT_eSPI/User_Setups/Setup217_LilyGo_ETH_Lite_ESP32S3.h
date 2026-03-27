@@ -28,19 +28,18 @@
 #endif
 
 // ============================================================
-//  드라이버 IC 선택 (실제 패널에 맞게 하나만 활성화)
+//  드라이버 IC 선택
+//  ★ 드라이버는 platformio.ini의 build_flags에서 단일 선언합니다 ★
+//    예: -DST7789_DRIVER  또는  -DILI9341_DRIVER
+//
+//  빌드 플래그에 아무것도 지정되지 않은 경우의 폴백(기본값):
 // ============================================================
-#if defined(LCD_INTERFACE_SPI)
-  // SPI 지원 드라이버 (하나만 활성화)
-  #define ILI9341_DRIVER     // 240x320 — 가장 일반적
-  // #define ST7789_DRIVER   // 240x240 / 170x320 등
-  // #define GC9A01_DRIVER   // 240x240 원형
-
-#elif defined(LCD_INTERFACE_8BIT_PARALLEL)
-  // 8-bit 병렬 지원 드라이버 (하나만 활성화)
-  #define TFT_PARALLEL_8_BIT
-  #define ILI9341_DRIVER     // 240x320
-  // #define ILI9488_DRIVER  // 480x320 (SPI 18-bit와 달리 8-bit 병렬로 고속 가능)
+#if !defined(ST7789_DRIVER)  && \
+    !defined(ILI9341_DRIVER) && \
+    !defined(ILI9488_DRIVER) && \
+    !defined(GC9A01_DRIVER)
+  #define ST7789_DRIVER   // 기본값 폴백 (명시적 선언 없을 때만)
+  #warning "No LCD driver defined in build_flags. Falling back to ST7789_DRIVER."
 #endif
 
 // ============================================================

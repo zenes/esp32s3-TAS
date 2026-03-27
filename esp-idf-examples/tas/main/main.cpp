@@ -329,24 +329,29 @@ static enum { ANSI_NONE, ANSI_ESC, ANSI_BRACKET } ansi_state = ANSI_NONE;
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #define ENABLE_LCD
-#define ENABLE_TE_SYNC
+
 // #define ENABLE_GRADIENT_BG // 그라데이션 배경 활성화 (기본 OFF)
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
 
 /* Touch Instance Selection */
+#ifdef ENABLE_TOUCH
 #if defined(TOUCH_GT911)
   TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, LCD_WIDTH, LCD_HEIGHT);
 #elif defined(TOUCH_XPT2046)
   XPT2046_Touchscreen tp(TOUCH_CS, TOUCH_IRQ); // Reusing 'tp' name for less code impact
 #endif
+#endif
+#ifdef ENABLE_TOUCH
 static lv_obj_t * touch_cursor;
 static lv_obj_t * touch_label;
 static lv_obj_t * touch_line_h;
 static lv_obj_t * touch_line_v;
+#endif
 
 /* LVGL Touchpad Read Callback */
 /* LVGL Touchpad Read Callback */
+#ifdef ENABLE_TOUCH
 void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data) {
     int raw_x = 0;
     int raw_y = 0;
@@ -410,6 +415,7 @@ void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data) {
         }
     }
 }
+#endif
 
 /* LVGL Double Buffers (Internal SRAM with DMA) */
 static lv_disp_draw_buf_t draw_buf;
@@ -473,6 +479,9 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
 
+  // Debug: Track if LVGL is actually calling flush
+  // Serial.printf("Flush Start: [%d,%d] %dx%d\n", area->x1, area->y1, w, h);
+
   static bool transfer_open = false;
 
   // 1. Wait for PREVIOUS DMA transfer to finish, then close the SPI transaction
@@ -505,6 +514,9 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   
   frame_cnt++;
   lv_disp_flush_ready(disp); // Tell LVGL we are ready for the NEXT frame buffer
+  
+  // Debug: Track completion
+  // Serial.println("Flush Done.");
 }
 
 volatile uint32_t last_render_time_ms = 0;
@@ -591,6 +603,7 @@ bool detectLCD() {
   uint16_t ili_id = readID_ILI();
   
   spi_p->endTransaction();
+  spi_p->end(); // Release SPI bus to prevent duplicate callback errors in TFT_eSPI
   digitalWrite(LCD_CS_PIN, HIGH);
   
   // User Requested: Proceed even if ID is not accurate
@@ -1665,6 +1678,7 @@ void setup() {
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     
     /* Initialize and Register Touchpad */
+#ifdef ENABLE_TOUCH
 #if defined(TOUCH_GT911)
     tp.begin();
     tp.setRotation(ROTATION_RIGHT); // X축 일치를 위해 RIGHT 모드로 복구
@@ -1678,10 +1692,10 @@ void setup() {
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = my_touchpad_read;
     lv_indev_drv_register(&indev_drv);
-
-    lv_indev_drv_register(&indev_drv);
+#endif
 
     /* Create a touch indicator on System Layer (Always on top) */
+#ifdef ENABLE_TOUCH
     touch_cursor = lv_obj_create(lv_layer_sys());
     lv_obj_set_size(touch_cursor, 10, 10);
     lv_obj_set_style_bg_color(touch_cursor, lv_palette_main(LV_PALETTE_RED), 0);
@@ -1708,6 +1722,7 @@ void setup() {
     lv_obj_set_style_bg_color(touch_label, lv_palette_main(LV_PALETTE_GREY), 0);
     lv_obj_set_style_bg_opa(touch_label, LV_OPA_50, 0);
     lv_obj_add_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
+#endif
 
 #ifdef ENABLE_TE_SYNC
     // Set refresh period to 16ms for 60 FPS (하드웨어 60Hz와 동기화)
@@ -1762,6 +1777,14 @@ void setup() {
 }
 
 void loop() {
+  handleShell();
+
+  // Heartbeat log (every 2 seconds) to check if loop is alive
+  static uint32_t last_heartbeat = 0;
+  if (millis() - last_heartbeat > 2000) {
+      Serial.println("Loop alive..."); 
+      last_heartbeat = millis();
+  }
   // Print status every 5 seconds (Changed from 30 for debugging)
   static unsigned long lastStatusPrint = 0;
   unsigned long currentMillis = millis();

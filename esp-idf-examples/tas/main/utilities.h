@@ -93,18 +93,33 @@
 #define SD_SCLK_PIN 7
 #define SD_CS_PIN 42
 
-// LCD Resolution
-#define LCD_WIDTH 240
-#define LCD_HEIGHT 320
+// LCD Unit Configuration
+#if defined(LCD_UNIT_1)
+  // Unit 1: ST7789 + GT911 (I2C)
+  #define LCD_WIDTH   240
+  #define LCD_HEIGHT  320
+  #define TOUCH_GT911
+  #define TOUCH_SDA   17
+  #define TOUCH_SCL   18
+  #define TOUCH_INT   21
+  #define TOUCH_RST   38
+#elif defined(LCD_UNIT_2)
+  // Unit 2: ILI9342 + XPT2046 (SPI)
+  #define LCD_WIDTH   240
+  #define LCD_HEIGHT  320
+  #define TOUCH_XPT2046
+  #define TOUCH_CS    38
+  #define TOUCH_IRQ   21
+#endif
 
-// LCD SPI2 (FSPI) Pins
+// Shared LCD SPI2 (FSPI) Pins
 #define LCD_MISO_PIN 1
 #define LCD_MOSI_PIN 3
 #define LCD_SCLK_PIN 2
-#define LCD_CS_PIN 4
-#define LCD_DC_PIN 8
-#define LCD_RST_PIN 15
-#define LCD_BL_PIN 16
+#define LCD_CS_PIN   4
+#define LCD_DC_PIN   8
+#define LCD_RST_PIN  15
+#define LCD_BL_PIN   16
 #define ENABLE_LCD
 
 #define IR_FILTER_NUM 46

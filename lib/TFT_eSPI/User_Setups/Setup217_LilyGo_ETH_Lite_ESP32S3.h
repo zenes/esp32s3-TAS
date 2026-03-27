@@ -99,11 +99,19 @@
 #define LOAD_GFXFF  // Adafruit GFX Free Fonts (FF1~FF48)
 #define SMOOTH_FONT // 스무스 폰트 (SPIFFS 사용 시 활성화)
 
-// ============================================================
-//  SPI 클럭 설정 (Software SPI 모드에서는 무시될 수 있음)
+// ================= : SPI 클럭 설정 (Software SPI 모드에서는 무시될 수 있음)
 // ============================================================
 #if defined(LCD_INTERFACE_SPI)
   // #define SOFT_SPI            // 하드웨어 모드로 복구
-  #define SPI_FREQUENCY       20000000  // 20MHz - 하드웨어 최적 속도
-  #define SPI_READ_FREQUENCY  5000000
+  #define SPI_FREQUENCY       40000000  // 40MHz - 안정적인 기본 고속 클럭
+  #define SPI_READ_FREQUENCY  20000000
+  #define SPI_TOUCH_FREQUENCY 2500000   // 터치용 클럭 (XPT2046 권장)
+#endif
+
+// ============================================================
+//  터치 컨트롤러 설정 (XPT2046 등 SPI 방식)
+//  빌드 플래그에 -DTOUCH_CS=xx 가 있으면 활성화됩니다.
+// ============================================================
+#ifdef TOUCH_CS
+  #define ADJ_TOUCH  // 터치 좌표 보정 활성화
 #endif

@@ -1,0 +1,237 @@
+diff --git a/esp-idf-examples/tas/main/main.cpp b/esp-idf-examples/tas/main/main.cpp
+index 0c2d253..2654f81 100644
+--- a/esp-idf-examples/tas/main/main.cpp
++++ b/esp-idf-examples/tas/main/main.cpp
+@@ -328,9 +328,7 @@ static String tab_prefix = "";
+ static enum { ANSI_NONE, ANSI_ESC, ANSI_BRACKET } ansi_state = ANSI_NONE;
+ 
+ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
+-#define ENABLE_LCD
+ 
+-// #define ENABLE_GRADIENT_BG // 그라데이션 배경 활성화 (기본 OFF)
+ static bool lcd_initialized = false;
+ static bool lcd_detected = false;
+ 
+@@ -433,19 +431,34 @@ static lv_obj_t *ui_label_te;
+ static lv_obj_t *ui_debug_panel;
+ static lv_obj_t *ui_label_spi;
+ static lv_obj_t *ui_label_tgt_fps;
+-// static lv_obj_t *ui_test_rect;
++#ifdef ENABLE_GRADIENT_BG
++static lv_obj_t *ui_test_rect;
++#endif
+ static uint32_t frame_cnt = 0;
+ static uint32_t fps_val = 0;
+ 
+ /* Timer callback to force Full Screen UI changes (Gradient/Color shift logic) */
+ #ifdef ENABLE_GRADIENT_BG
+ void move_test_rect_cb(lv_timer_t * t) {
++  /* 배경 그라데이션 일시 중단 (CPU 부하 테스트를 위해) */
++  /*
+   static uint8_t c = 0;
+-  c += 2; // Slower, smoother change
++  c += 2; 
+   lv_obj_t *scr = lv_scr_act();
+   lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
+   lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
+   lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
++  */
++
++  // 실제로 노란색 사각형만 움직여서 60 FPS 달성 여부 확인
++  if (ui_test_rect) {
++    static int x = 10, y = 10;
++    static int dx = 5, dy = 3;
++    x += dx; y += dy;
++    if (x <= 1 || x >= 320 - 15 - 1) dx *= -1;
++    if (y <= 1 || y >= 240 - 15 - 1) dy *= -1;
++    lv_obj_set_pos(ui_test_rect, x, y);
++  }
+ }
+ #endif
+ 
+@@ -512,7 +525,11 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
+   // Instead, we mark it open so the NEXT flush closes it to prevent SPI lock-up.
+   transfer_open = true;
+   
+-  frame_cnt++;
++  // Only increment frame_cnt when the full screen is flushed
++  if (lv_disp_flush_is_last(disp)) {
++    frame_cnt++;
++  }
++  
+   lv_disp_flush_ready(disp); // Tell LVGL we are ready for the NEXT frame buffer
+   
+   // Debug: Track completion
+@@ -774,11 +791,11 @@ void initLVGLUI() {
+   ui_test_rect = lv_obj_create(scr);
+   lv_obj_set_size(ui_test_rect, 15, 15);
+   lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
+-  lv_obj_set_style_border_width(0, 0, 0);
++  lv_obj_set_style_border_width(ui_test_rect, 0, 0);
+   lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
+   
+-  // Create 30Hz timer (1000/30 = 33.3ms)
+-  lv_timer_create(move_test_rect_cb, 33, NULL);
++  // Create 60Hz timer (1000/16 = 62.5 FPS)
++  lv_timer_create(move_test_rect_cb, 16, NULL);
+ #endif
+ }
+ 
+@@ -1645,9 +1662,9 @@ void setup() {
+     /* Initialize LVGL and Allocate DMA Buffers in Internal SRAM */
+     lv_init();
+     
+-    // Allocate 2 x 80KB buffers in Internal SRAM with DMA capability
+-    // 64 lines exactly matches the 32KB L1 Data Cache on ESP32-S3 (240x64x2 = 30.7KB)
+-    size_t lines = 64; 
++    // Allocate 2 x 100KB buffers in Internal SRAM with DMA capability
++    // 80 lines reduces SPI overhead (240x80x2 = 38.4KB per buffer)
++    size_t lines = 80; 
+     size_t buf_size = LCD_WIDTH * lines * sizeof(lv_color_t);
+     
+     buf1 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+@@ -1863,9 +1880,11 @@ void loop() {
+     // Update FPS Label every 1 second independently
+     static uint32_t last_fps_millis = 0;
+     if (millis() - last_fps_millis >= 1000) {
++      fps_val = frame_cnt; // Record frames per second
++      frame_cnt = 0;       // Reset for next second
++
+       if (ui_label_fps) {
+-          // fps_val = lv_refr_get_fps_avg(); // Use LVGL internal average FPS
+-          char buf_fps[32]; // 크기 늘림
++          char buf_fps[32]; 
+           snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %ums", fps_val, last_render_time_ms);
+           lv_label_set_text(ui_label_fps, buf_fps);
+       }
+diff --git a/esp-idf-examples/tas/main/utilities.h b/esp-idf-examples/tas/main/utilities.h
+index 9a3b0f7..659e01b 100644
+--- a/esp-idf-examples/tas/main/utilities.h
++++ b/esp-idf-examples/tas/main/utilities.h
+@@ -19,8 +19,8 @@
+ // https://www.lilygo.cc/products/t-eth-lite?variant=43120880779445
+ #define LILYGO_T_ETH_LITE_ESP32S3
+ //#define ENABLE_ETHERNET  // Enable Ethernet Features (Default)
+-//#define ENABLE_TE_SYNC     // Enable TE(Tearing Effect) Hardware Sync Mode (40Hz limit)
+-//#define ENABLE_TOUCH       // Enable Touch Features (GT911/XPT2046)
++#define ENABLE_GRADIENT_BG
++
+ 
+ // Product Link : N.A
+ // #define LILYGO_T_ETH_ELITE_ESP32S3
+@@ -104,6 +104,9 @@
+   #define TOUCH_SCL   18
+   #define TOUCH_INT   21
+   #define TOUCH_RST   38
++//#define ENABLE_TE_SYNC     // Enable TE(Tearing Effect) Hardware Sync Mode
++#define ENABLE_LCD
++#define ENABLE_TOUCH       //
+ #elif defined(LCD_UNIT_2)
+   // Unit 2: ILI9342 + XPT2046 (SPI)
+   #define LCD_WIDTH   240
+@@ -111,6 +114,8 @@
+   #define TOUCH_XPT2046
+   #define TOUCH_CS    38
+   #define TOUCH_IRQ   21
++#define ENABLE_LCD
++//#define ENABLE_TOUCH       //
+ #endif
+ 
+ // Shared LCD SPI2 (FSPI) Pins
+@@ -121,7 +126,6 @@
+ #define LCD_DC_PIN   8
+ #define LCD_RST_PIN  15
+ #define LCD_BL_PIN   16
+-#define ENABLE_LCD
+ 
+ #define IR_FILTER_NUM 46
+ #elif defined(LILYGO_T_ETH_ELITE_ESP32S3)
+diff --git a/esp-idf-examples/tas/platformio.ini b/esp-idf-examples/tas/platformio.ini
+index 5896fb3..d8340f0 100644
+--- a/esp-idf-examples/tas/platformio.ini
++++ b/esp-idf-examples/tas/platformio.ini
+@@ -21,7 +21,6 @@ build_flags =
+ 	-DTFT_MISO=1
+ 	-DTOUCH_CS=38
+ 	-DTOUCH_IRQ=21
+-	-DSPI_FREQUENCY=40000000
+ 
+ # ============================================================
+ #  보드 기본 공통 설정 (H/W 특성)
+diff --git a/esp-idf-examples/tas/sdkconfig.TAS b/esp-idf-examples/tas/sdkconfig.TAS
+index 08f5b1e..9a2fe7a 100644
+--- a/esp-idf-examples/tas/sdkconfig.TAS
++++ b/esp-idf-examples/tas/sdkconfig.TAS
+@@ -331,9 +331,9 @@ CONFIG_ESP32S3_REV_MAX_FULL_STR_OPT=y
+ CONFIG_ESP32S3_REV_MAX_FULL=99
+ CONFIG_ESP_REV_MAX_FULL=99
+ # CONFIG_ESP32S3_DEFAULT_CPU_FREQ_80 is not set
+-CONFIG_ESP32S3_DEFAULT_CPU_FREQ_160=y
+-# CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240 is not set
+-CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=160
++# CONFIG_ESP32S3_DEFAULT_CPU_FREQ_160 is not set
++CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
++CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240
+ 
+ #
+ # Cache config
+diff --git a/esp-idf-examples/tas/sdkconfig.defaults b/esp-idf-examples/tas/sdkconfig.defaults
+index 8544096..3903d68 100644
+--- a/esp-idf-examples/tas/sdkconfig.defaults
++++ b/esp-idf-examples/tas/sdkconfig.defaults
+@@ -6,3 +6,4 @@ CONFIG_SPIRAM_MODE_OCT=y
+ CONFIG_SPIRAM_SPEED_80M=y
+ CONFIG_SPIRAM_BOOT_INIT=y
+ CONFIG_SPIRAM_USE_MALLOC=y
++CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240
+diff --git a/esp-idf-examples/tas/sdkconfig.lilygo b/esp-idf-examples/tas/sdkconfig.lilygo
+index 607ad9f..69f7b59 100644
+--- a/esp-idf-examples/tas/sdkconfig.lilygo
++++ b/esp-idf-examples/tas/sdkconfig.lilygo
+@@ -331,9 +331,9 @@ CONFIG_ESP32S3_REV_MAX_FULL_STR_OPT=y
+ CONFIG_ESP32S3_REV_MAX_FULL=99
+ CONFIG_ESP_REV_MAX_FULL=99
+ # CONFIG_ESP32S3_DEFAULT_CPU_FREQ_80 is not set
+-CONFIG_ESP32S3_DEFAULT_CPU_FREQ_160=y
+-# CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240 is not set
+-CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=160
++# CONFIG_ESP32S3_DEFAULT_CPU_FREQ_160 is not set
++CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
++CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240
+ 
+ #
+ # Cache config
+diff --git a/esp-idf-examples/tas/sdkconfig.unit1 b/esp-idf-examples/tas/sdkconfig.unit1
+index 607ad9f..69f7b59 100644
+--- a/esp-idf-examples/tas/sdkconfig.unit1
++++ b/esp-idf-examples/tas/sdkconfig.unit1
+@@ -331,9 +331,9 @@ CONFIG_ESP32S3_REV_MAX_FULL_STR_OPT=y
+ CONFIG_ESP32S3_REV_MAX_FULL=99
+ CONFIG_ESP_REV_MAX_FULL=99
+ # CONFIG_ESP32S3_DEFAULT_CPU_FREQ_80 is not set
+-CONFIG_ESP32S3_DEFAULT_CPU_FREQ_160=y
+-# CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240 is not set
+-CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=160
++# CONFIG_ESP32S3_DEFAULT_CPU_FREQ_160 is not set
++CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
++CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240
+ 
+ #
+ # Cache config
+diff --git a/esp-idf-examples/tas/sdkconfig.unit2 b/esp-idf-examples/tas/sdkconfig.unit2
+index 607ad9f..69f7b59 100644
+--- a/esp-idf-examples/tas/sdkconfig.unit2
++++ b/esp-idf-examples/tas/sdkconfig.unit2
+@@ -331,9 +331,9 @@ CONFIG_ESP32S3_REV_MAX_FULL_STR_OPT=y
+ CONFIG_ESP32S3_REV_MAX_FULL=99
+ CONFIG_ESP_REV_MAX_FULL=99
+ # CONFIG_ESP32S3_DEFAULT_CPU_FREQ_80 is not set
+-CONFIG_ESP32S3_DEFAULT_CPU_FREQ_160=y
+-# CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240 is not set
+-CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=160
++# CONFIG_ESP32S3_DEFAULT_CPU_FREQ_160 is not set
++CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
++CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240
+ 
+ #
+ # Cache config

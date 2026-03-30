@@ -19,8 +19,8 @@
 // https://www.lilygo.cc/products/t-eth-lite?variant=43120880779445
 #define LILYGO_T_ETH_LITE_ESP32S3
 //#define ENABLE_ETHERNET  // Enable Ethernet Features (Default)
-//#define ENABLE_TE_SYNC     // Enable TE(Tearing Effect) Hardware Sync Mode (40Hz limit)
-//#define ENABLE_TOUCH       // Enable Touch Features (GT911/XPT2046)
+#define ENABLE_GRADIENT_BG
+
 
 // Product Link : N.A
 // #define LILYGO_T_ETH_ELITE_ESP32S3
@@ -104,6 +104,9 @@
   #define TOUCH_SCL   18
   #define TOUCH_INT   21
   #define TOUCH_RST   38
+//#define ENABLE_TE_SYNC     // Enable TE(Tearing Effect) Hardware Sync Mode
+#define ENABLE_LCD
+#define ENABLE_TOUCH       //
 #elif defined(LCD_UNIT_2)
   // Unit 2: ILI9342 + XPT2046 (SPI)
   #define LCD_WIDTH   240
@@ -111,6 +114,8 @@
   #define TOUCH_XPT2046
   #define TOUCH_CS    38
   #define TOUCH_IRQ   21
+#define ENABLE_LCD
+//#define ENABLE_TOUCH       //
 #endif
 
 // Shared LCD SPI2 (FSPI) Pins
@@ -121,7 +126,6 @@
 #define LCD_DC_PIN   8
 #define LCD_RST_PIN  15
 #define LCD_BL_PIN   16
-#define ENABLE_LCD
 
 #define IR_FILTER_NUM 46
 #elif defined(LILYGO_T_ETH_ELITE_ESP32S3)

@@ -1,5 +1,17 @@
 # 프로젝트 진행 상황
 
+## 2026-03-30
+- **CPU 렌더링 성능 및 FPS 최적화**:
+    - **60 FPS 타겟팅**: 애니메이션 타이머 주기를 33ms(30FPS)에서 16ms(60FPS)로 상향 조정.
+    - **DMA 버퍼 효율화**: 내부 SRAM 버퍼를 64라인에서 **80라인**으로 확장하여 SPI 전송 횟수(오버헤드)를 줄임.
+    - **정확한 성능 지표 측정**: `frame_cnt` 증가 시점을 프레임 완료 시점으로 교정하고, 1초마다 `fps_val`을 실시간 갱신하도록 `loop()` 로직 개선.
+- **시스템 안정성 강화 (Bug Fix)**:
+    - **LOD/NULL Pointer Crash 해결**: `ENABLE_GRADIENT_BG` 활성화 시 잘못된 인자(`0`) 전달로 발생하던 `lv_obj_set_style_border_width` 크래시를 `ui_test_rect` 할당으로 해결.
+    - **하드웨어 성능 검증 로직**: CPU 부하가 큰 그라데이션과 분리하여 독립적으로 동작하는 '노란색 사각형 바운싱' 테스트 애니메이션 구현.
+- **터치 인터페이스(GT911/XPT2046) 분석**: 
+    - GPIO 17, 18번 핀과 Octal PSRAM 간의 물리적 충돌 및 WDT(Watchdog) 트리거 원인 규명. 
+    - 인터럽트(IRQ) 방식 대신 SPI/I2C 동기화와 안정성을 위한 폴링(Polling) 방식의 효용성 검토.
+
 ## 2026-03-27
 - **PSRAM 모드 안정성 검증**: `CONFIG_SPIRAM_MODE_OCT=y` (Octal 모드) 재활성화 및 WiFi softAP와의 공존성 확인 완료.
 - **LCD 드라이버 설정 구조 개선**: `Setup217_LilyGo_ETH_Lite_ESP32S3.h`의 중복 드라이버 선언을 제거하고, `platformio.ini`의 빌드 플래그(`ST7789_DRIVER`)를 통해 단일 소스(Single Source)로 관리하도록 최적화.

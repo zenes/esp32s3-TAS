@@ -328,7 +328,9 @@ static String tab_prefix = "";
 static enum { ANSI_NONE, ANSI_ESC, ANSI_BRACKET } ansi_state = ANSI_NONE;
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
+#define ENABLE_LCD
 
+// #define ENABLE_GRADIENT_BG // 그라데이션 배경 활성화 (기본 OFF)
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
 
@@ -510,11 +512,7 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   // Instead, we mark it open so the NEXT flush closes it to prevent SPI lock-up.
   transfer_open = true;
   
-  // Only increment frame_cnt when the full screen is flushed
-  if (lv_disp_flush_is_last(disp)) {
-    frame_cnt++;
-  }
-  
+  frame_cnt++;
   lv_disp_flush_ready(disp); // Tell LVGL we are ready for the NEXT frame buffer
   
   // Debug: Track completion
@@ -776,11 +774,11 @@ void initLVGLUI() {
   ui_test_rect = lv_obj_create(scr);
   lv_obj_set_size(ui_test_rect, 15, 15);
   lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
-  lv_obj_set_style_border_width(ui_test_rect, 0, 0);
+  lv_obj_set_style_border_width(0, 0, 0);
   lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
   
-  // Create 60Hz timer (1000/16 = 62.5 FPS)
-  lv_timer_create(move_test_rect_cb, 16, NULL);
+  // Create 30Hz timer (1000/30 = 33.3ms)
+  lv_timer_create(move_test_rect_cb, 33, NULL);
 #endif
 }
 
@@ -1647,9 +1645,9 @@ void setup() {
     /* Initialize LVGL and Allocate DMA Buffers in Internal SRAM */
     lv_init();
     
-    // Allocate 2 x 100KB buffers in Internal SRAM with DMA capability
-    // 80 lines reduces SPI overhead (240x80x2 = 38.4KB per buffer)
-    size_t lines = 80; 
+    // Allocate 2 x 80KB buffers in Internal SRAM with DMA capability
+    // 64 lines exactly matches the 32KB L1 Data Cache on ESP32-S3 (240x64x2 = 30.7KB)
+    size_t lines = 64; 
     size_t buf_size = LCD_WIDTH * lines * sizeof(lv_color_t);
     
     buf1 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -1865,11 +1863,9 @@ void loop() {
     // Update FPS Label every 1 second independently
     static uint32_t last_fps_millis = 0;
     if (millis() - last_fps_millis >= 1000) {
-      fps_val = frame_cnt; // Record frames per second
-      frame_cnt = 0;       // Reset for next second
-
       if (ui_label_fps) {
-          char buf_fps[32]; 
+          // fps_val = lv_refr_get_fps_avg(); // Use LVGL internal average FPS
+          char buf_fps[32]; // 크기 늘림
           snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %ums", fps_val, last_render_time_ms);
           lv_label_set_text(ui_label_fps, buf_fps);
       }

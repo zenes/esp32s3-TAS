@@ -645,12 +645,13 @@ void initLVGLUI() {
   lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_YELLOW), 0);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
-  lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN); // 숨김
+  lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN); // 다시 숨김 (v8.4)
 
   /* Debug Panel */
   ui_debug_panel = lv_obj_create(scr);
   lv_obj_set_size(ui_debug_panel, 175, LV_SIZE_CONTENT);
-  lv_obj_align(ui_debug_panel, LV_ALIGN_RIGHT_MID, -10, 0); // 화면 우측 중앙(y=120)으로 정렬
+  lv_obj_align(ui_debug_panel, LV_ALIGN_RIGHT_MID, -10, 0); 
+  lv_obj_add_flag(ui_debug_panel, LV_OBJ_FLAG_HIDDEN); // 패널 자체 숨김 (v8.4)
   // 디버그 패널 자체는 살리고 내부 글씨들만 골라서 숨김
   lv_obj_set_style_bg_color(ui_debug_panel, lv_color_make(20, 20, 20), 0); // 어두운 회색/검정
   lv_obj_set_style_bg_opa(ui_debug_panel, LV_OPA_90, 0); // 약간의 투명도
@@ -669,7 +670,7 @@ void initLVGLUI() {
   lv_label_set_text(debug_title, "DEBUG INFO");
   lv_obj_set_style_text_font(debug_title, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(debug_title, lv_palette_main(LV_PALETTE_LIGHT_BLUE), 0);
-  lv_obj_add_flag(debug_title, LV_OBJ_FLAG_HIDDEN); // 숨김
+  lv_obj_add_flag(debug_title, LV_OBJ_FLAG_HIDDEN); // 다시 숨김 (v8.4)
 
   /* FPS Label */
   ui_label_fps = lv_label_create(ui_debug_panel);
@@ -681,7 +682,7 @@ void initLVGLUI() {
   ui_label_tgt_fps = lv_label_create(ui_debug_panel);
   lv_obj_set_style_text_font(ui_label_tgt_fps, &lv_font_montserrat_14, 0); 
   lv_obj_set_style_text_color(ui_label_tgt_fps, lv_palette_main(LV_PALETTE_ORANGE), 0);
-  lv_obj_add_flag(ui_label_tgt_fps, LV_OBJ_FLAG_HIDDEN); // 숨김
+  lv_obj_add_flag(ui_label_tgt_fps, LV_OBJ_FLAG_HIDDEN); // 다시 숨김 (v8.4)
 #ifdef LV_DISP_DEF_REFR_PERIOD
   lv_label_set_text_fmt(ui_label_tgt_fps, "TGT: %d FPS", 1000 / LV_DISP_DEF_REFR_PERIOD);
 #else
@@ -692,7 +693,7 @@ void initLVGLUI() {
   ui_label_spi = lv_label_create(ui_debug_panel);
   lv_obj_set_style_text_font(ui_label_spi, &lv_font_montserrat_14, 0); 
   lv_obj_set_style_text_color(ui_label_spi, lv_palette_main(LV_PALETTE_LIGHT_GREEN), 0);
-  lv_obj_add_flag(ui_label_spi, LV_OBJ_FLAG_HIDDEN); // 숨김
+  lv_obj_add_flag(ui_label_spi, LV_OBJ_FLAG_HIDDEN); // 다시 숨김 (v8.4)
 #ifdef SPI_FREQUENCY
   lv_label_set_text_fmt(ui_label_spi, "SPI: %d MHz", SPI_FREQUENCY / 1000000);
 #else
@@ -741,20 +742,20 @@ void initLVGLUI() {
   lv_label_set_recolor(ui_label_eth, true);
   lv_obj_set_style_text_color(ui_label_eth, lv_color_white(), 0);
   lv_obj_align(ui_label_eth, LV_ALIGN_TOP_LEFT, 10, 50);
-  lv_obj_add_flag(ui_label_eth, LV_OBJ_FLAG_HIDDEN); // 이더넷 라벨 렌더링 무효화 (Hide)
+  lv_obj_add_flag(ui_label_eth, LV_OBJ_FLAG_HIDDEN); // 다시 숨김 (v8.4)
 
   /* Access Point Label */
   ui_label_ap = lv_label_create(scr);
   lv_label_set_recolor(ui_label_ap, true);
   lv_obj_set_style_text_color(ui_label_ap, lv_color_white(), 0);
   lv_obj_align(ui_label_ap, LV_ALIGN_TOP_LEFT, 10, 80);
-  lv_obj_add_flag(ui_label_ap, LV_OBJ_FLAG_HIDDEN); // 숨김
+  lv_obj_add_flag(ui_label_ap, LV_OBJ_FLAG_HIDDEN); // 다시 숨김 (v8.4)
 
   /* Clients Info */
   ui_label_clients = lv_label_create(scr);
   lv_obj_set_style_text_color(ui_label_clients, lv_palette_lighten(LV_PALETTE_GREY, 1), 0);
   lv_obj_align(ui_label_clients, LV_ALIGN_TOP_LEFT, 10, 110);
-  lv_obj_add_flag(ui_label_clients, LV_OBJ_FLAG_HIDDEN); // 숨김
+  lv_obj_add_flag(ui_label_clients, LV_OBJ_FLAG_HIDDEN); // 다시 숨김 (v8.4)
 
   /* Animation Bar for FPS Verification */
   lv_obj_t *bar = lv_bar_create(scr);
@@ -1648,22 +1649,22 @@ void setup() {
     /* Initialize LVGL and Allocate DMA Buffers in Internal SRAM */
     lv_init();
     
-    // Allocate 2 x 100KB buffers in Internal SRAM with DMA capability
-    // 80 lines reduces SPI overhead (240x80x2 = 38.4KB per buffer)
-    size_t lines = 64; 
-    size_t buf_size = LCD_WIDTH * lines * sizeof(lv_color_t);
+    // Allocate 2 x 64KB buffers in Internal SRAM with DMA capability
+    // 100 lines for S3-Box Landscape (320x100x2 = 64KB per buffer)
+    size_t lines = 100; 
+    size_t buf_size = TFT_HEIGHT * lines * sizeof(lv_color_t);
     
     buf1 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     buf2 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     
     if (buf1 == NULL || buf2 == NULL) {
-        Serial.println("Failed to allocate DMA buffers! Falling back to SRAM Single...");
+        Serial.println("Failed to allocate DMA buffers! Critical performance loss.");
         if(buf1) free(buf1);
-        static lv_color_t sram_single[LCD_WIDTH * 20];
-        lv_disp_draw_buf_init(&draw_buf, sram_single, NULL, LCD_WIDTH * 20);
+        static lv_color_t sram_single[TFT_HEIGHT * 20];
+        lv_disp_draw_buf_init(&draw_buf, sram_single, NULL, TFT_HEIGHT * 20);
     } else {
         Serial.printf("DMA Double Buffers allocated: 2 x %u bytes\n", buf_size);
-        lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_WIDTH * lines);
+        lv_disp_draw_buf_init(&draw_buf, buf1, buf2, TFT_HEIGHT * lines);
     }
 
     /* Initialize the display driver for LVGL */

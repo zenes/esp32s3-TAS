@@ -37,7 +37,13 @@
 
 /* Default display refresh period. LVGL will redraw at most this many times in a second */
 #ifndef LV_DISP_DEF_REFR_PERIOD
-#define LV_DISP_DEF_REFR_PERIOD 33      /*[ms] 10→33: 30 FPS 타겟 설정*/
+#define LV_DISP_DEF_REFR_PERIOD 16      /*[ms] 60 FPS 타겟 설정*/
+#endif
+
+/* 1: Show CPU usage and FPS count in the right bottom corner */
+#define LV_USE_PERF_MONITOR 1
+#if LV_USE_PERF_MONITOR
+    #define LV_USE_PERF_MONITOR_POS LV_ALIGN_BOTTOM_RIGHT
 #endif
 
 /* Default dot per inch. Used by the built-in themes */

@@ -32,6 +32,67 @@
 #include <TAMC_GT911.h> // GT911 Touch Library (Default for ST7789)
 #endif
 #endif
+
+// --- Build Config Logging Macros ---
+#define STR_HELPER(x) #x
+#define STR(x) STR_HELPER(x)
+
+#pragma message("--- [BUILD INFO] ---------------------------------------")
+#ifdef LILYGO_T_ETH_LITE_ESP32S3
+  #pragma message("--- [BOARD] LilyGO T-ETH-Lite ESP32-S3")
+#elif defined(ESP32_S3_LCD_EV_BOARD_2)
+  #pragma message("--- [BOARD] ESP32-S3-LCD-EV-BOARD-2")
+#elif defined(TAS_CUSTOM_BOARD)
+  #pragma message("--- [BOARD] TAS Custom Board")
+#else
+  #pragma message("--- [BOARD] Unknown ESP32-S3 Board")
+#endif
+
+#ifdef LCD_TYPE_ST7789
+  #pragma message("--- [LCD  ] Type: ST7789 (240x320)")
+#elif defined(LCD_TYPE_ILI9341)
+  #pragma message("--- [LCD  ] Type: ILI9341 (240x320)")
+#elif defined(LCD_TYPE_ST7796)
+  #pragma message("--- [LCD  ] Type: ST7796 (320x480)")
+#else
+  #pragma message("--- [LCD  ] Type: Unknown/Not Defined")
+#endif
+
+#ifdef SPI_FREQUENCY
+  #if SPI_FREQUENCY == 80000000
+    #pragma message("--- [SPI  ] Frequency: 80 MHz")
+  #elif SPI_FREQUENCY == 40000000
+    #pragma message("--- [SPI  ] Frequency: 40 MHz")
+  #elif SPI_FREQUENCY == 27000000
+    #pragma message("--- [SPI  ] Frequency: 27 MHz")
+  #elif SPI_FREQUENCY == 20000000
+    #pragma message("--- [SPI  ] Frequency: 20 MHz")
+  #else
+    #pragma message("--- [SPI  ] Frequency: " STR(SPI_FREQUENCY) " Hz")
+  #endif
+#else
+  #pragma message("--- [SPI  ] Frequency: Not Defined (Using Default)")
+#endif
+
+#ifdef LV_DISP_DEF_REFR_PERIOD
+  #if LV_DISP_DEF_REFR_PERIOD == 16
+    #pragma message("--- [LVGL ] Refresh: 16 ms (62 FPS target)")
+  #elif LV_DISP_DEF_REFR_PERIOD == 33
+    #pragma message("--- [LVGL ] Refresh: 33 ms (30 FPS target)")
+  #else
+    #pragma message("--- [LVGL ] Refresh: " STR(LV_DISP_DEF_REFR_PERIOD) " ms (" STR(1000/LV_DISP_DEF_REFR_PERIOD) " FPS target)")
+  #endif
+#else
+  #pragma message("--- [LVGL ] Refresh: Not Defined (Using LVGL Default)")
+#endif
+
+#ifdef ENABLE_TOUCH
+  #pragma message("--- [TOUCH] Status: ENABLED")
+#else
+  #pragma message("--- [TOUCH] Status: DISABLED")
+#endif
+#pragma message("--------------------------------------------------------")
+// -----------------------------------
 #include <stdarg.h>  // For va_list
 #include <Preferences.h> // For NVS storage
 #include <esp_mac.h>     // For esp_read_mac
@@ -1614,6 +1675,16 @@ void setup() {
     tft.writecommand(0x35);
     tft.writedata(0x00);
     Serial.println("ST7789 TE(Tearing Effect) Pin Output Enabled!");
+
+    // Runtime Configuration Summary
+    Serial.println("\r\n--- Runtime Display Configuration ---");
+#ifdef SPI_FREQUENCY
+    Serial.printf("  SPI Frequency  : %d MHz\n", SPI_FREQUENCY / 1000000);
+#endif
+#ifdef LV_DISP_DEF_REFR_PERIOD
+    Serial.printf("  Refresh Period : %d ms (%d FPS target)\n", LV_DISP_DEF_REFR_PERIOD, 1000 / LV_DISP_DEF_REFR_PERIOD);
+#endif
+    Serial.println("-------------------------------------\r\n");
 
     tft.initDMA(); // Start GDMA for SPI
     

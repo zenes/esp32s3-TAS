@@ -103,7 +103,7 @@
 // ============================================================
 #if defined(LCD_INTERFACE_SPI)
   // #define SOFT_SPI            // 하드웨어 모드로 복구
-  #define SPI_FREQUENCY       40000000  // 40MHz - 안정적인 기본 고속 클럭
+  #define SPI_FREQUENCY       80000000  // 80MHz - 최고 성능 고속 클럭
   #define SPI_READ_FREQUENCY  20000000
   #define SPI_TOUCH_FREQUENCY 2500000   // 터치용 클럭 (XPT2046 권장)
 #endif

@@ -25,10 +25,12 @@
 #include <rom/rtc.h>    // For rtc_get_reset_reason
 #include <TFT_eSPI.h> // LCD Library
 #include <lvgl.h>    // LVGL Graphic Library
+#ifdef ENABLE_TOUCH
 #ifdef LCD_TYPE_ILI9341
 #include <XPT2046_Touchscreen.h> // XPT2046 Touch Library
 #else
 #include <TAMC_GT911.h> // GT911 Touch Library (Default for ST7789)
+#endif
 #endif
 #include <stdarg.h>  // For va_list
 #include <Preferences.h> // For NVS storage
@@ -332,6 +334,7 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
 
+#ifdef ENABLE_TOUCH
 /* Touch Instance */
 #ifdef LCD_TYPE_ILI9341
 XPT2046_Touchscreen tp(TOUCH_CS, TOUCH_IRQ);
@@ -342,9 +345,11 @@ static lv_obj_t * touch_cursor;
 static lv_obj_t * touch_label;
 static lv_obj_t * touch_line_h;
 static lv_obj_t * touch_line_v;
+#endif
 
 /* LVGL Touchpad Read Callback */
 void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data) {
+#ifdef ENABLE_TOUCH
 #if defined(LCD_TYPE_ILI9341) || (defined(TOUCH_SDA) && defined(TOUCH_SCL))
     bool touched = false;
     int x = 0, y = 0;
@@ -401,6 +406,9 @@ void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data) {
             lv_obj_add_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
         }
     }
+#else
+    data->state = LV_INDEV_STATE_REL;
+#endif
 #else
     data->state = LV_INDEV_STATE_REL;
 #endif
@@ -585,6 +593,10 @@ bool detectLCD() {
   } else {
     Serial.println("Failed. LCD not found.");
   }
+  #ifdef LCD_TYPE_ILI9341
+  detected = true;
+  Serial.println("Force initializing.");
+  #endif
   
   return detected;
 }
@@ -1653,6 +1665,7 @@ void setup() {
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     
     /* Initialize and Register Touchpad */
+#ifdef ENABLE_TOUCH
 #ifdef LCD_TYPE_ILI9341
     tp.begin();
     tp.setRotation(1); // Landscape for XPT2046
@@ -1694,6 +1707,7 @@ void setup() {
     lv_obj_set_style_bg_color(touch_label, lv_palette_main(LV_PALETTE_GREY), 0);
     lv_obj_set_style_bg_opa(touch_label, LV_OPA_50, 0);
     lv_obj_add_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
+#endif
 
 #ifdef ENABLE_TE_SYNC
     // Set refresh period to 16ms for 60 FPS (하드웨어 60Hz와 동기화)

@@ -25,7 +25,11 @@
 #include <rom/rtc.h>    // For rtc_get_reset_reason
 #include <TFT_eSPI.h> // LCD Library
 #include <lvgl.h>    // LVGL Graphic Library
-#include <TAMC_GT911.h> // GT911 Touch Library
+#ifdef LCD_TYPE_ILI9341
+#include <XPT2046_Touchscreen.h> // XPT2046 Touch Library
+#else
+#include <TAMC_GT911.h> // GT911 Touch Library (Default for ST7789)
+#endif
 #include <stdarg.h>  // For va_list
 #include <Preferences.h> // For NVS storage
 #include <esp_mac.h>     // For esp_read_mac
@@ -328,8 +332,12 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
 
-/* GT911 Touch Instance */
-TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, LCD_WIDTH, LCD_HEIGHT);
+/* Touch Instance */
+#ifdef LCD_TYPE_ILI9341
+XPT2046_Touchscreen tp(TOUCH_CS, TOUCH_IRQ);
+#elif defined(TOUCH_SDA) && defined(TOUCH_SCL)
+TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, TFT_WIDTH, TFT_HEIGHT);
+#endif
 static lv_obj_t * touch_cursor;
 static lv_obj_t * touch_label;
 static lv_obj_t * touch_line_h;
@@ -337,40 +345,49 @@ static lv_obj_t * touch_line_v;
 
 /* LVGL Touchpad Read Callback */
 void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data) {
+#if defined(LCD_TYPE_ILI9341) || (defined(TOUCH_SDA) && defined(TOUCH_SCL))
+    bool touched = false;
+    int x = 0, y = 0;
+
+    #ifdef LCD_TYPE_ILI9341
+    if (tp.touched()) {
+        TS_Point p = tp.getPoint();
+        x = map(p.x, 200, 3700, 0, TFT_WIDTH);
+        y = map(p.y, 240, 3800, 0, TFT_HEIGHT);
+        touched = true;
+    }
+    #elif defined(TOUCH_SDA) && defined(TOUCH_SCL)
     tp.read();
     if (tp.isTouched) {
-        data->state = LV_INDEV_STATE_PR;
-        
         // Calibration mapping: 
         // X: 0 ~ 300 -> 0 ~ 319
         // Y: 85 ~ 315 -> 0 ~ 239
         int raw_x = tp.points[0].x;
         int raw_y = tp.points[0].y;
-        
-        data->point.x = map(raw_x, 0, 300, 0, 319);
-        data->point.y = map(raw_y, 85, 315, 0, 239);
+        x = map(raw_x, 0, 300, 0, 319);
+        y = map(raw_y, 85, 315, 0, 239);
+        touched = true;
+    }
+    #endif
+
+    if (touched) {
+        data->state = LV_INDEV_STATE_PR;
+        data->point.x = x;
+        data->point.y = y;
         
         // Constrain to screen bounds
         if (data->point.x < 0) data->point.x = 0;
-        if (data->point.x >= 320) data->point.x = 319;
+        if (data->point.x >= TFT_WIDTH) data->point.x = TFT_WIDTH - 1;
         if (data->point.y < 0) data->point.y = 0;
-        if (data->point.y >= 240) data->point.y = 239;
-        
-        // Console output with mapping info
-        Serial.printf("Touch: MapX=%d, MapY=%d (Raw X=%d, Raw Y=%d)\n", 
-            data->point.x, data->point.y, raw_x, raw_y);
-        
-        // Visual feedback (Always On Top Layer)
+        if (data->point.y >= TFT_HEIGHT) data->point.y = TFT_HEIGHT - 1;
+
         if (touch_cursor) {
             lv_obj_set_pos(touch_cursor, data->point.x - 5, data->point.y - 5);
             lv_obj_clear_flag(touch_cursor, LV_OBJ_FLAG_HIDDEN);
-            
             lv_obj_set_pos(touch_line_h, 0, data->point.y);
             lv_obj_clear_flag(touch_line_h, LV_OBJ_FLAG_HIDDEN);
-            
             lv_obj_set_pos(touch_line_v, data->point.x, 0);
             lv_obj_clear_flag(touch_line_v, LV_OBJ_FLAG_HIDDEN);
-            
             lv_label_set_text_fmt(touch_label, "X:%d Y:%d", data->point.x, data->point.y);
             lv_obj_set_pos(touch_label, data->point.x + 15, data->point.y + 15);
             lv_obj_clear_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
@@ -384,6 +401,9 @@ void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data) {
             lv_obj_add_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
         }
     }
+#else
+    data->state = LV_INDEV_STATE_REL;
+#endif
 }
 
 /* LVGL Double Buffers (Internal SRAM with DMA) */
@@ -522,23 +542,23 @@ static bool ap_started = false;
 bool detectLCD() {
   Serial.print("Probing LCD hardware... ");
   
-  // Use SPI2 (FSPI) to avoid conflict with Ethernet (SPI3)
+  // Use SPI2 (FSPI) to avoid conflict with Ethernet (SPI3) on some boards
   static SPIClass* spi_p = nullptr;
   if (!spi_p) spi_p = new SPIClass(FSPI); 
-  spi_p->begin(LCD_SCLK_PIN, LCD_MISO_PIN, LCD_MOSI_PIN, LCD_CS_PIN);
+  spi_p->begin(TFT_SCLK, TFT_MISO, TFT_MOSI, TFT_CS);
   
-  pinMode(LCD_MISO_PIN, INPUT_PULLUP);
-  pinMode(LCD_CS_PIN, OUTPUT);
-  pinMode(LCD_DC_PIN, OUTPUT);
-  pinMode(LCD_RST_PIN, OUTPUT);
+  pinMode(TFT_MISO, INPUT_PULLUP);
+  pinMode(TFT_CS, OUTPUT);
+  pinMode(TFT_DC, OUTPUT);
+  pinMode(TFT_RST, OUTPUT);
 
   // Hardware Reset
-  digitalWrite(LCD_RST_PIN, LOW);
+  digitalWrite(TFT_RST, LOW);
   delay(100); 
-  digitalWrite(LCD_RST_PIN, HIGH);
+  digitalWrite(TFT_RST, HIGH);
   delay(200); 
   
-  digitalWrite(LCD_CS_PIN, LOW);
+  digitalWrite(TFT_CS, LOW);
   delay(5); 
   
   spi_p->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
@@ -1633,15 +1653,18 @@ void setup() {
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     
     /* Initialize and Register Touchpad */
+#ifdef LCD_TYPE_ILI9341
     tp.begin();
-    tp.setRotation(ROTATION_RIGHT); // X축 일치를 위해 RIGHT 모드로 복구
+    tp.setRotation(1); // Landscape for XPT2046
+#elif defined(TOUCH_SDA) && defined(TOUCH_SCL)
+    tp.begin();
+    tp.setRotation(ROTATION_RIGHT);
+#endif
 
     static lv_indev_drv_t indev_drv;
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = my_touchpad_read;
-    lv_indev_drv_register(&indev_drv);
-
     lv_indev_drv_register(&indev_drv);
 
     /* Create a touch indicator on System Layer (Always on top) */

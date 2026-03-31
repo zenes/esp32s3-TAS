@@ -322,8 +322,9 @@ static enum { ANSI_NONE, ANSI_ESC, ANSI_BRACKET } ansi_state = ANSI_NONE;
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #define ENABLE_LCD
-#define ENABLE_TE_SYNC
-// #define ENABLE_GRADIENT_BG // 그라데이션 배경 활성화 (기본 OFF)
+
+
+#define ENABLE_GRADIENT_BG // 그라데이션 배경 활성화 (기본 OFF)
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
 
@@ -411,9 +412,11 @@ void move_test_rect_cb(lv_timer_t * t) {
   static uint8_t c = 0;
   c += 2; // Slower, smoother change
   lv_obj_t *scr = lv_scr_act();
-  lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
-  lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
-  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
+  if (scr) {
+    lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
+    lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
+    lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
+  }
 }
 #endif
 
@@ -571,6 +574,8 @@ bool detectLCD() {
  */
 void initLVGLUI() {
   lv_obj_t *scr = lv_scr_act();
+  if (!scr) return;
+
   lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
 
 #ifdef ENABLE_GRADIENT_BG
@@ -720,13 +725,15 @@ void initLVGLUI() {
 #ifdef ENABLE_GRADIENT_BG
   /* 30FPS Test Moving Rect & Gradient Animation */
   ui_test_rect = lv_obj_create(scr);
-  lv_obj_set_size(ui_test_rect, 15, 15);
-  lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
-  lv_obj_set_style_border_width(0, 0, 0);
-  lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
-  
-  // Create 30Hz timer (1000/30 = 33.3ms)
-  lv_timer_create(move_test_rect_cb, 33, NULL);
+  if (ui_test_rect) {
+    lv_obj_set_size(ui_test_rect, 15, 15);
+    lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
+    lv_obj_set_style_border_width(ui_test_rect, 0, 0); 
+    lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
+    
+    // Create 30Hz timer (1000/30 = 33.3ms)
+    lv_timer_create(move_test_rect_cb, LV_DISP_DEF_REFR_PERIOD, NULL);
+  }
 #endif
 }
 
@@ -1621,7 +1628,7 @@ void setup() {
     disp_drv.draw_buf = &draw_buf; // CRITICAL: This was missing!
     
     // 강제 전체 업데이트 해제 (부분 업데이트로 복귀하여 프레임레이트 복구)
-    // disp_drv.full_refresh = 1; 
+    disp_drv.full_refresh = 1; 
 
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     

@@ -32,8 +32,8 @@
 // ============================================================
 #if defined(LCD_INTERFACE_SPI)
   // SPI 지원 드라이버 (하나만 활성화)
-  #define ILI9341_DRIVER     // 240x320 — 가장 일반적
-  // #define ST7789_DRIVER   // 240x240 / 170x320 등
+  // #define ILI9341_DRIVER     // 240x320 — 가장 일반적
+   #define ST7789_DRIVER   // 240x240 / 170x320 등
   // #define GC9A01_DRIVER   // 240x240 원형
 
 #elif defined(LCD_INTERFACE_8BIT_PARALLEL)
@@ -105,7 +105,6 @@
 // ============================================================
 #if defined(LCD_INTERFACE_SPI)
   // #define SOFT_SPI            // 하드웨어 모드로 복구
-  #define SPI_FREQUENCY       20000000  // 20MHz - 하드웨어 최적 속도
+  // #define SPI_FREQUENCY       20000000  // 20MHz - 하드웨어 최적 속도
   #define SPI_READ_FREQUENCY  5000000
-#endif
 #endif

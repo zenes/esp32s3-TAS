@@ -47,6 +47,7 @@
 #include "driver/gpio.h"
 #include "soc/io_mux_reg.h"
 
+
 // Global Traffic Stats
 struct InterfaceStats {
     uint64_t rx_bytes = 0;
@@ -780,7 +781,7 @@ void initLVGLUI() {
   lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
   
   // Create 60Hz timer (1000/16 = 62.5 FPS)
-  lv_timer_create(move_test_rect_cb, 16, NULL);
+  lv_timer_create(move_test_rect_cb, LV_DISP_DEF_REFR_PERIOD, NULL);
 #endif
 }
 
@@ -1649,7 +1650,7 @@ void setup() {
     
     // Allocate 2 x 100KB buffers in Internal SRAM with DMA capability
     // 80 lines reduces SPI overhead (240x80x2 = 38.4KB per buffer)
-    size_t lines = 80; 
+    size_t lines = 64; 
     size_t buf_size = LCD_WIDTH * lines * sizeof(lv_color_t);
     
     buf1 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -1675,7 +1676,7 @@ void setup() {
     disp_drv.draw_buf = &draw_buf; // CRITICAL: This was missing!
     
     // 강제 전체 업데이트 해제 (부분 업데이트로 복귀하여 프레임레이트 복구)
-    // disp_drv.full_refresh = 1; 
+    disp_drv.full_refresh = 1; 
 
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     
@@ -1891,7 +1892,7 @@ void loop() {
   }
 
   // Allow other tasks to run and feed the Watchdog on CPU 0
-  delay(1); 
+  yield(); 
 }
 
 extern "C" void app_main() {

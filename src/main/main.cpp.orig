@@ -25,7 +25,11 @@
 #include <rom/rtc.h>    // For rtc_get_reset_reason
 #include <TFT_eSPI.h> // LCD Library
 #include <lvgl.h>    // LVGL Graphic Library
-#include <TAMC_GT911.h> // GT911 Touch Library
+#if defined(TOUCH_GT911)
+  #include <TAMC_GT911.h> // GT911 Touch Library
+#elif defined(TOUCH_XPT2046)
+  #include <XPT2046_Touchscreen.h> // XPT2046 Touch Library
+#endif
 #include <stdarg.h>  // For va_list
 #include <Preferences.h> // For NVS storage
 #include <esp_mac.h>     // For esp_read_mac
@@ -208,18 +212,19 @@ static String ap_pw_custom = AP_PASSWORD_BASE;
 Preferences preferences;
 
 // Traffic Monitoring State
-static uint32_t last_eth_rx = 0;
-static uint32_t last_eth_tx = 0;
-static uint32_t last_ap_rx = 0;
-static uint32_t last_ap_tx = 0;
-static unsigned long last_speed_check = 0;
+// static uint32_t last_eth_rx = 0;
+// static uint32_t last_eth_tx = 0;
+// static uint32_t last_ap_rx = 0;
+// static uint32_t last_ap_tx = 0;
+// static unsigned long last_speed_check = 0;
 // Shell & Monitoring Configuration
 static bool monitor_traffic = false;
 static bool monitor_enabled = false;
 static int cursor_pos = 0;
 
 // iPerf State
-static void* lwiperf_session = NULL;
+// static void* lwiperf_session = NULL;
+/*
 static void lwiperf_report(void* arg, enum lwiperf_report_type report_type,
                            const ip_addr_t* local_addr, u16_t local_port, const ip_addr_t* remote_addr, u16_t remote_port,
                            u32_t bytes_transferred, u32_t ms_duration, u32_t bandwidth_kbitpsec) {
@@ -241,16 +246,18 @@ static void lwiperf_report(void* arg, enum lwiperf_report_type report_type,
          lwiperf_session = NULL;
     }
 }
+*/
 
 // UDP iPerf State
 static AsyncUDP udp_iperf_server;
-static bool udp_iperf_running = false;
-static volatile uint32_t udp_iperf_bytes = 0;
-static uint32_t udp_iperf_last_print = 0;
+// static bool udp_iperf_running = false;
+// static uint32_t udp_iperf_last_print = 0;
 
+/*
 static void onUDPPacket(AsyncUDPPacket packet) {
   udp_iperf_bytes += packet.length();
 }
+*/
 
 // Ping State
 static bool ping_running = false;
@@ -323,32 +330,55 @@ static enum { ANSI_NONE, ANSI_ESC, ANSI_BRACKET } ansi_state = ANSI_NONE;
 TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #define ENABLE_LCD
 
-
-#define ENABLE_GRADIENT_BG // 그라데이션 배경 활성화 (기본 OFF)
+// #define ENABLE_GRADIENT_BG // 그라데이션 배경 활성화 (기본 OFF)
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
 
-/* GT911 Touch Instance */
-TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, LCD_WIDTH, LCD_HEIGHT);
+/* Touch Instance Selection */
+#ifdef ENABLE_TOUCH
+#if defined(TOUCH_GT911)
+  TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, LCD_WIDTH, LCD_HEIGHT);
+#elif defined(TOUCH_XPT2046)
+  XPT2046_Touchscreen tp(TOUCH_CS, TOUCH_IRQ); // Reusing 'tp' name for less code impact
+#endif
+#endif
+#ifdef ENABLE_TOUCH
 static lv_obj_t * touch_cursor;
 static lv_obj_t * touch_label;
 static lv_obj_t * touch_line_h;
 static lv_obj_t * touch_line_v;
+#endif
 
 /* LVGL Touchpad Read Callback */
+/* LVGL Touchpad Read Callback */
+#ifdef ENABLE_TOUCH
 void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data) {
+    int raw_x = 0;
+    int raw_y = 0;
+    bool touched = false;
+
+#if defined(TOUCH_GT911)
     tp.read();
     if (tp.isTouched) {
-        data->state = LV_INDEV_STATE_PR;
-        
-        // Calibration mapping: 
-        // X: 0 ~ 300 -> 0 ~ 319
-        // Y: 85 ~ 315 -> 0 ~ 239
-        int raw_x = tp.points[0].x;
-        int raw_y = tp.points[0].y;
-        
+        touched = true;
+        raw_x = tp.points[0].x;
+        raw_y = tp.points[0].y;
         data->point.x = map(raw_x, 0, 300, 0, 319);
         data->point.y = map(raw_y, 85, 315, 0, 239);
+    }
+#elif defined(TOUCH_XPT2046)
+    if (tp.touched()) {
+        touched = true;
+        TS_Point p = tp.getPoint();
+        raw_x = p.x;
+        raw_y = p.y;
+        data->point.x = map(raw_x, 200, 3800, 0, 319);
+        data->point.y = map(raw_y, 200, 3800, 0, 239);
+    }
+#endif
+
+    if (touched) {
+        data->state = LV_INDEV_STATE_PR;
         
         // Constrain to screen bounds
         if (data->point.x < 0) data->point.x = 0;
@@ -385,6 +415,7 @@ void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data) {
         }
     }
 }
+#endif
 
 /* LVGL Double Buffers (Internal SRAM with DMA) */
 static lv_disp_draw_buf_t draw_buf;
@@ -412,11 +443,9 @@ void move_test_rect_cb(lv_timer_t * t) {
   static uint8_t c = 0;
   c += 2; // Slower, smoother change
   lv_obj_t *scr = lv_scr_act();
-  if (scr) {
-    lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
-    lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
-    lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
-  }
+  lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
+  lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
 }
 #endif
 
@@ -450,6 +479,9 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
 
+  // Debug: Track if LVGL is actually calling flush
+  // Serial.printf("Flush Start: [%d,%d] %dx%d\n", area->x1, area->y1, w, h);
+
   static bool transfer_open = false;
 
   // 1. Wait for PREVIOUS DMA transfer to finish, then close the SPI transaction
@@ -482,6 +514,9 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   
   frame_cnt++;
   lv_disp_flush_ready(disp); // Tell LVGL we are ready for the NEXT frame buffer
+  
+  // Debug: Track completion
+  // Serial.println("Flush Done.");
 }
 
 volatile uint32_t last_render_time_ms = 0;
@@ -543,27 +578,41 @@ bool detectLCD() {
   
   spi_p->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
   
-  // Multiple ID probe (ST7789 requires 1-byte dummy before parameter)
-  auto readID = [&](uint8_t cmd) {
+  // ST7789 ID Probe (DA/DB/DC)
+  auto readID_ST = [&](uint8_t cmd) {
     digitalWrite(LCD_DC_PIN, LOW); spi_p->transfer(cmd);
     digitalWrite(LCD_DC_PIN, HIGH);
     spi_p->transfer(0x00); // Dummy Byte
     return spi_p->transfer(0x00); // Real ID
   };
 
-  uint8_t id1 = readID(0xDA);
-  uint8_t id2 = readID(0xDB);
-  uint8_t id3 = readID(0xDC);
+  // ILI9341/9342 ID Probe (D3: Read ID4)
+  auto readID_ILI = [&]() {
+    digitalWrite(LCD_DC_PIN, LOW); spi_p->transfer(0xD3);
+    digitalWrite(LCD_DC_PIN, HIGH);
+    spi_p->transfer(0x00); // 1st dummy
+    spi_p->transfer(0x00); // 2nd dummy (usually 0x00)
+    uint8_t id2 = spi_p->transfer(0x00); // 0x93
+    uint8_t id3 = spi_p->transfer(0x00); // 0x41 or 0x42
+    return (uint16_t)(id2 << 8 | id3);
+  };
+
+  uint8_t st_id1 = readID_ST(0xDA);
+  uint8_t st_id2 = readID_ST(0xDB);
+  uint8_t st_id3 = readID_ST(0xDC);
+  uint16_t ili_id = readID_ILI();
   
   spi_p->endTransaction();
+  spi_p->end(); // Release SPI bus to prevent duplicate callback errors in TFT_eSPI
   digitalWrite(LCD_CS_PIN, HIGH);
   
-  bool detected = (id1 != 0x00 && id1 != 0xFF) || (id2 != 0x00 && id2 != 0xFF) || (id3 != 0x00 && id3 != 0xFF);
+  // User Requested: Proceed even if ID is not accurate
+  bool detected = true; // Forced detection
 
-  if (detected) {
-    Serial.printf("Done. LCD Detected (ID:%02X%02X%02X)\n", id1, id2, id3);
+  if ((st_id1 != 0x00 && st_id1 != 0xFF) || (ili_id == 0x9341 || ili_id == 0x9342)) {
+    Serial.printf("Done. LCD Detected (ST:%02X%02X%02X / ILI:%04X)\n", st_id1, st_id2, st_id3, ili_id);
   } else {
-    Serial.println("Failed. LCD not found.");
+    Serial.printf("Note: LCD ID not matched (Raw ST:%02X%02X%02X, ILI:%04X). Forcing initialization...\n", st_id1, st_id2, st_id3, ili_id);
   }
   
   return detected;
@@ -574,8 +623,6 @@ bool detectLCD() {
  */
 void initLVGLUI() {
   lv_obj_t *scr = lv_scr_act();
-  if (!scr) return;
-
   lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
 
 #ifdef ENABLE_GRADIENT_BG
@@ -725,15 +772,13 @@ void initLVGLUI() {
 #ifdef ENABLE_GRADIENT_BG
   /* 30FPS Test Moving Rect & Gradient Animation */
   ui_test_rect = lv_obj_create(scr);
-  if (ui_test_rect) {
-    lv_obj_set_size(ui_test_rect, 15, 15);
-    lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
-    lv_obj_set_style_border_width(ui_test_rect, 0, 0); 
-    lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
-    
-    // Create 30Hz timer (1000/30 = 33.3ms)
-    lv_timer_create(move_test_rect_cb, LV_DISP_DEF_REFR_PERIOD, NULL);
-  }
+  lv_obj_set_size(ui_test_rect, 15, 15);
+  lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
+  lv_obj_set_style_border_width(0, 0, 0);
+  lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
+  
+  // Create 30Hz timer (1000/30 = 33.3ms)
+  lv_timer_create(move_test_rect_cb, 33, NULL);
 #endif
 }
 
@@ -1628,23 +1673,29 @@ void setup() {
     disp_drv.draw_buf = &draw_buf; // CRITICAL: This was missing!
     
     // 강제 전체 업데이트 해제 (부분 업데이트로 복귀하여 프레임레이트 복구)
-    disp_drv.full_refresh = 1; 
+    // disp_drv.full_refresh = 1; 
 
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     
     /* Initialize and Register Touchpad */
+#ifdef ENABLE_TOUCH
+#if defined(TOUCH_GT911)
     tp.begin();
     tp.setRotation(ROTATION_RIGHT); // X축 일치를 위해 RIGHT 모드로 복구
+#elif defined(TOUCH_XPT2046)
+    tp.begin();
+    tp.setRotation(3); // Match landscape orientation
+#endif
 
     static lv_indev_drv_t indev_drv;
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = my_touchpad_read;
     lv_indev_drv_register(&indev_drv);
-
-    lv_indev_drv_register(&indev_drv);
+#endif
 
     /* Create a touch indicator on System Layer (Always on top) */
+#ifdef ENABLE_TOUCH
     touch_cursor = lv_obj_create(lv_layer_sys());
     lv_obj_set_size(touch_cursor, 10, 10);
     lv_obj_set_style_bg_color(touch_cursor, lv_palette_main(LV_PALETTE_RED), 0);
@@ -1671,6 +1722,7 @@ void setup() {
     lv_obj_set_style_bg_color(touch_label, lv_palette_main(LV_PALETTE_GREY), 0);
     lv_obj_set_style_bg_opa(touch_label, LV_OPA_50, 0);
     lv_obj_add_flag(touch_label, LV_OBJ_FLAG_HIDDEN);
+#endif
 
 #ifdef ENABLE_TE_SYNC
     // Set refresh period to 16ms for 60 FPS (하드웨어 60Hz와 동기화)
@@ -1725,6 +1777,14 @@ void setup() {
 }
 
 void loop() {
+  handleShell();
+
+  // Heartbeat log (every 2 seconds) to check if loop is alive
+  static uint32_t last_heartbeat = 0;
+  if (millis() - last_heartbeat > 2000) {
+      Serial.println("Loop alive..."); 
+      last_heartbeat = millis();
+  }
   // Print status every 5 seconds (Changed from 30 for debugging)
   static unsigned long lastStatusPrint = 0;
   unsigned long currentMillis = millis();
@@ -1797,21 +1857,22 @@ void loop() {
   }
 
   // Update LVGL tick and timer handler
-  lv_timer_handler();
+  if (lcd_initialized) {
+    lv_timer_handler();
 
-  // Update FPS Label every 1 second independently
-  static uint32_t last_fps_millis = 0;
-  if (millis() - last_fps_millis >= 1000) {
-    if (lcd_initialized && ui_label_fps) {
-        fps_val = lv_refr_get_fps_avg(); // Use LVGL internal average FPS
-        char buf_fps[32]; // 크기 늘림
-        snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %ums", fps_val, last_render_time_ms);
-        lv_label_set_text(ui_label_fps, buf_fps);
-    }
-    
-#ifdef ENABLE_TE_SYNC
-    if (lcd_initialized && ui_label_te) {
-        int64_t delta_us = te_delta_us;
+    // Update FPS Label every 1 second independently
+    static uint32_t last_fps_millis = 0;
+    if (millis() - last_fps_millis >= 1000) {
+      if (ui_label_fps) {
+          // fps_val = lv_refr_get_fps_avg(); // Use LVGL internal average FPS
+          char buf_fps[32]; // 크기 늘림
+          snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %ums", fps_val, last_render_time_ms);
+          lv_label_set_text(ui_label_fps, buf_fps);
+      }
+      
+  #ifdef ENABLE_TE_SYNC
+      if (ui_label_te) {
+          int64_t delta_us = te_delta_us;
         if (delta_us > 0) {
             float te_ms = delta_us / 1000.0f;
             float te_hz = 1000000.0f / delta_us;
@@ -1821,9 +1882,18 @@ void loop() {
         }
     }
 #endif
-    last_fps_millis = millis();
+      last_fps_millis = millis();
+    }
   }
 
-  // Minimal delay for system stability while maximizing loop throughput
-  yield(); 
+  // Allow other tasks to run and feed the Watchdog on CPU 0
+  delay(1); 
+}
+
+extern "C" void app_main() {
+  initArduino();
+  setup();
+  while (1) {
+    loop();
+  }
 }

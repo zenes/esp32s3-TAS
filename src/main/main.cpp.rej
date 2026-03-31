@@ -1,0 +1,37 @@
+@@ -433,19 +431,34 @@
+ static lv_obj_t *ui_debug_panel;
+ static lv_obj_t *ui_label_spi;
+ static lv_obj_t *ui_label_tgt_fps;
+-// static lv_obj_t *ui_test_rect;
++#ifdef ENABLE_GRADIENT_BG
++static lv_obj_t *ui_test_rect;
++#endif
+ static uint32_t frame_cnt = 0;
+ static uint32_t fps_val = 0;
+ 
+ /* Timer callback to force Full Screen UI changes (Gradient/Color shift logic) */
+ #ifdef ENABLE_GRADIENT_BG
+ void move_test_rect_cb(lv_timer_t * t) {
++  /* 배경 그라데이션 일시 중단 (CPU 부하 테스트를 위해) */
++  /*
+   static uint8_t c = 0;
+-  c += 2; // Slower, smoother change
++  c += 2; 
+   lv_obj_t *scr = lv_scr_act();
+   lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
+   lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
+   lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
++  */
++
++  // 실제로 노란색 사각형만 움직여서 60 FPS 달성 여부 확인
++  if (ui_test_rect) {
++    static int x = 10, y = 10;
++    static int dx = 5, dy = 3;
++    x += dx; y += dy;
++    if (x <= 1 || x >= 320 - 15 - 1) dx *= -1;
++    if (y <= 1 || y >= 240 - 15 - 1) dy *= -1;
++    lv_obj_set_pos(ui_test_rect, x, y);
++  }
+ }
+ #endif
+ 

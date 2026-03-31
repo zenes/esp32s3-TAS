@@ -11,6 +11,11 @@
     *   `Setup217` 설정 파일 내 드라이버를 `ST7789_DRIVER`로 확정하고, `platformio.ini`의 80MHz 클럭이 우선 적용되도록 중복 코드 정리.
     *   `disp_drv.full_refresh = 1` 활성화를 통해 화면 전체 갱신 안정성 확보.
 
+### 프로젝트 구조 재정의 (Rename)
+*   **프로젝트 이름 변경**: `examples/eth2ap`를 `examples/tas`로 복사 및 전환 완료.
+*   **파일 정리**: `eth2ap.ino`를 `tas.ino`로 변경하고, 모든 소스 코드 내 `eth2ap` 문자열을 `tas`로 일괄 치환.
+*   **빌드 설정**: 루트 `platformio.ini`의 `src_dir`을 `examples/tas`로 업데이트하여 빌드 대상 변경.
+
 ## 2026-03-26
 ### 2026-03-26 (오후): GT911 터치 인터페이스 및 정밀 보정 완료
 *   **터치 컨트롤러 통합**: GT911 (I2C) 드라이버 연동 및 `platformio.ini` 환경 설정 (IO17, 18, 21, 38).
@@ -40,12 +45,12 @@
 ## 2026-03-20
 - **LCD 디버깅을 위한 이더넷 격리**:
     - `utilities.h`에 `ENABLE_ETHERNET` 토글 추가 (충돌 방지를 위해 기본적으로 비활성화).
-    - `eth2ap.ino` 내의 이더넷 초기화, 이벤트 핸들러, 루프 로직을 `#ifdef ENABLE_ETHERNET`으로 감싸 처리.
-    - `eth2ap.ino` 내의 이더넷 관련 셸 명령어(`stats`, `iperf`, `dhcp` 등)를 격리.
+    - `tas.ino` 내의 이더넷 초기화, 이벤트 핸들러, 루프 로직을 `#ifdef ENABLE_ETHERNET`으로 감싸 처리.
+    - `tas.ino` 내의 이더넷 관련 셸 명령어(`stats`, `iperf`, `dhcp` 등)를 격리.
 - **빌드 및 호환성 수정**:
     - `platformio.ini`의 소스 필터를 수정하여 모든 소스 파일(`+<*>`)이 포함되도록 수정.
     - `lib_ignore`에서 누락되었던 필수 라이브러리(`ETHClass2`, `ESP32Ping`, `lvgl`) 복구.
-    - `eth2ap.ino` 내의 Arduino Core 2.0.x 호환성 문제 해결 (`WiFi.AP.netif()` 관련).
+    - `tas.ino` 내의 Arduino Core 2.0.x 호환성 문제 해결 (`WiFi.AP.netif()` 관련).
     - LCD 타이틀 폰트를 `lv_font_montserrat_14`로 변경하여 링크 에러 해결.
 - **문서화 및 워크플로우**:
     - 상세한 SPI 채널 분석 및 설정 내용을 담은 `docs/spi.md` 생성.
@@ -101,9 +106,9 @@
 ## 2026-03-24
 - **LCD DMA 및 더블 버퍼링 원복**:
     - Non-blocking 전송(DMA) 시 화면 업데이트가 상시적으로 발생하지 않는 문제를 해결하기 위해 이전의 안정적인 싱글 버퍼(20라인) 및 블로킹 전송 방식으로 원복.
-    - `eth2ap.ino`: 160라인 x 2 더블 버퍼를 20라인 싱글 버퍼로 변경하여 동기식 SPI 전송 안정성 확보.
-    - `eth2ap.ino`: `pushImageDMA` 및 `dmaWait` 코드로 인한 비동기 충돌 가능성을 제거하고 `pushColors` 기반의 블로킹 전송으로 복구.
-    - `eth2ap.ino`: `tft.initDMA()` 호출을 제거하여 하드웨어 리소스 최적화.
+    - `tas.ino`: 160라인 x 2 더블 버퍼를 20라인 싱글 버퍼로 변경하여 동기식 SPI 전송 안정성 확보.
+    - `tas.ino`: `pushImageDMA` 및 `dmaWait` 코드로 인한 비동기 충돌 가능성을 제거하고 `pushColors` 기반의 블로킹 전송으로 복구.
+    - `tas.ino`: `tft.initDMA()` 호출을 제거하여 하드웨어 리소스 최적화.
     - **LCD 성능 극대화 (18 FPS -> 53 FPS / 300% 향상)**:
     - SPI 클럭 80MHz 상향 및 비동기 DMA(`tft.endWrite()` 제거) 적용으로 병렬 처리 극대화.
     - ESP32-S3의 32KB L1 캐시에 맞춘 **64라인 더블 버퍼링**으로 CPU 연산 효율 100% 달성.

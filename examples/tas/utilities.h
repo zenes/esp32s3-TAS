@@ -17,7 +17,7 @@
 
 // Product Link :
 // https://www.lilygo.cc/products/t-eth-lite?variant=43120880779445
-#define LILYGO_T_ETH_LITE_ESP32S3
+// #define LILYGO_T_ETH_LITE_ESP32S3
 //#define ENABLE_ETHERNET  // Enable Ethernet Features (Default)
 //#define ENABLE_TE_SYNC     // Enable TE(Tearing Effect) Hardware Sync Mode (40Hz limit)
 
@@ -80,6 +80,26 @@
 #define SD_SCLK_PIN 14
 #define SD_CS_PIN 5
 
+#elif defined(ESP32_S3_LCD_EV_BOARD_2)
+// ESP32-S3-LCD-EV-Board-2 (Espressif Official)
+// Parallel 16-bit Pins are defined via platformio.ini build flags
+#define LCD_WIDTH 240
+#define LCD_HEIGHT 320
+
+#define LCD_DC_PIN TFT_DC
+#define LCD_CS_PIN TFT_CS
+#define LCD_BL_PIN TFT_BL
+#define ENABLE_LCD
+
+// Ethernet (Dummy for EVB-2)
+#define ETH_MISO_PIN -1
+#define ETH_MOSI_PIN -1
+#define ETH_SCLK_PIN -1
+#define ETH_CS_PIN -1
+#define ETH_INT_PIN -1
+#define ETH_RST_PIN -1
+#define ETH_ADDR -1
+
 #elif defined(LILYGO_T_ETH_LITE_ESP32S3)
 #define ETH_MISO_PIN 11
 #define ETH_MOSI_PIN 12
@@ -108,6 +128,7 @@
 #define ENABLE_LCD
 
 #define IR_FILTER_NUM 46
+
 #elif defined(LILYGO_T_ETH_ELITE_ESP32S3)
 
 #define ETH_MISO_PIN 47

@@ -37,7 +37,7 @@
 
 /* Default display refresh period. LVGL will redraw at most this many times in a second */
 #ifndef LV_DISP_DEF_REFR_PERIOD
-#define LV_DISP_DEF_REFR_PERIOD 33      /*[ms] 10→33: 30 FPS 타겟 설정*/
+#define LV_DISP_DEF_REFR_PERIOD 16      /*[ms] 10→33: 30 FPS 타겟 설정*/
 #endif
 
 /* Default dot per inch. Used by the built-in themes */

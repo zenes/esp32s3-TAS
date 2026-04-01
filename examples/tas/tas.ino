@@ -51,7 +51,11 @@
 #ifdef LCD_TYPE_ST7789
   #pragma message("--- [LCD  ] Type: ST7789 (240x320)")
 #elif defined(LCD_TYPE_ILI9341)
-  #pragma message("--- [LCD  ] Type: ILI9341 (240x320)")
+  #ifdef TFT_PARALLEL_16_BIT
+    #pragma message("--- [LCD  ] Type: ILI9341 (240x320) [16-bit Parallel]")
+  #else
+    #pragma message("--- [LCD  ] Type: ILI9341 (240x320) [SPI]")
+  #endif
 #elif defined(LCD_TYPE_ST7796)
   #pragma message("--- [LCD  ] Type: ST7796 (320x480)")
 #else
@@ -391,7 +395,6 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #define ENABLE_LCD
 
 
-#define ENABLE_GRADIENT_BG // 그라데이션 배경 활성화 (기본 OFF)
 static bool lcd_initialized = false;
 static bool lcd_detected = false;
 
@@ -495,19 +498,7 @@ static lv_obj_t *ui_test_rect;
 static uint32_t frame_cnt = 0;
 static uint32_t fps_val = 0;
 
-/* Timer callback to force Full Screen UI changes (Gradient/Color shift logic) */
-#ifdef ENABLE_GRADIENT_BG
-void move_test_rect_cb(lv_timer_t * t) {
-  static uint8_t c = 0;
-  c += 2; // Slower, smoother change
-  lv_obj_t *scr = lv_scr_act();
-  if (scr) {
-    lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
-    lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
-    lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
-  }
-}
-#endif
+/* Removed move_test_rect_cb */
 
 #ifdef ENABLE_TE_SYNC
 #define TE_PIN 21
@@ -609,6 +600,11 @@ static bool ap_started = false;
  * @return true if LCD is detected, false otherwise
  */
 bool detectLCD() {
+#ifdef ESP32_S3_LCD_EV_BOARD_2
+  Serial.println("Board: ESP32-S3-LCD-EV-BOARD-2 Detected. Skipping SPI probing (Parallel 8080 mode).");
+  return true; // Assume LCD is present on EVB-2
+#endif
+
   Serial.print("Probing LCD hardware... ");
   
   // Use SPI2 (FSPI) to avoid conflict with Ethernet (SPI3) on some boards
@@ -669,13 +665,10 @@ void initLVGLUI() {
   lv_obj_t *scr = lv_scr_act();
   if (!scr) return;
 
-  lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
-
-#ifdef ENABLE_GRADIENT_BG
-  lv_obj_set_style_bg_color(scr, lv_palette_main(LV_PALETTE_BLUE), 0);
-  lv_obj_set_style_bg_grad_color(scr, lv_palette_main(LV_PALETTE_PURPLE), 0);
+  // 기본 배경색 설정 (짙은 파란색 계열 테마 적용)
+  lv_obj_set_style_bg_color(scr, lv_color_make(15, 20, 35), 0);
+  lv_obj_set_style_bg_grad_color(scr, lv_color_make(30, 45, 65), 0);
   lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
-#endif
   
   // 화면 잘림 현상을 확인하기 위한 전체 테두리 (디버깅용)
   lv_obj_set_style_border_color(scr, lv_color_make(255, 255, 255), 0);
@@ -751,83 +744,61 @@ void initLVGLUI() {
   lv_label_set_text(ui_label_te, "TE: --");
 #endif
 
-  /* Color Test Boxes (Bottom) */
-  static lv_color_t test_colors[] = {LV_COLOR_MAKE(255,0,0), LV_COLOR_MAKE(0,255,0), LV_COLOR_MAKE(0,0,255), LV_COLOR_MAKE(255,255,255), LV_COLOR_MAKE(0,0,0)};
-  const char* color_names[] = {"R", "G", "B", "W", "K"};
-  
-  for(int i=0; i<5; i++) {
-    lv_obj_t *box = lv_obj_create(scr);
-    lv_obj_set_size(box, 30, 20);
-    lv_obj_set_style_bg_color(box, test_colors[i], 0);
-    lv_obj_set_style_border_width(box, 1, 0);
-    lv_obj_set_style_border_color(box, lv_palette_main(LV_PALETTE_GREY), 0);
-    lv_obj_align(box, LV_ALIGN_BOTTOM_LEFT, 10 + (i * 35), -10);
-    
-    lv_obj_t *lbl = lv_label_create(box);
-    lv_label_set_text(lbl, color_names[i]);
-    lv_obj_center(lbl);
-    lv_obj_add_flag(lbl, LV_OBJ_FLAG_HIDDEN); // 숨김
-    if(i == 3) lv_obj_set_style_text_color(lbl, lv_color_black(), 0); // Black text for White box
-    else lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
-  }
+  /* === Status Dashboard Panel === */
+  lv_obj_t *panel_container = lv_obj_create(scr);
+  lv_obj_set_size(panel_container, TFT_WIDTH - 20, 160);
+  lv_obj_align(panel_container, LV_ALIGN_TOP_MID, 0, 50);
+  lv_obj_set_style_bg_opa(panel_container, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(panel_container, 0, 0);
+  lv_obj_set_style_pad_all(panel_container, 0, 0);
 
-  /* Separator */
-  static lv_point_t line_points[] = {{0, 0}, {LCD_HEIGHT, 0}}; // Landscape orientation
-  lv_obj_t *line = lv_line_create(scr);
-  lv_line_set_points(line, line_points, 2);
-  lv_obj_set_style_line_color(line, lv_palette_main(LV_PALETTE_GREY), 0);
-  lv_obj_set_style_line_width(line, 2, 0);
-  lv_obj_align(line, LV_ALIGN_TOP_MID, 0, 35);
+  lv_obj_set_layout(panel_container, LV_LAYOUT_FLEX);
+  lv_obj_set_flex_flow(panel_container, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(panel_container, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-  /* Ethernet Label */
-  ui_label_eth = lv_label_create(scr);
+  // --- Ethernet Panel ---
+  lv_obj_t *eth_panel = lv_obj_create(panel_container);
+  lv_obj_set_size(eth_panel, 140, 140);
+  lv_obj_set_style_bg_color(eth_panel, lv_color_make(35, 40, 50), 0);
+  lv_obj_set_style_border_color(eth_panel, lv_color_make(80, 80, 90), 0);
+  lv_obj_set_style_border_width(eth_panel, 1, 0);
+  lv_obj_set_layout(eth_panel, LV_LAYOUT_FLEX);
+  lv_obj_set_flex_flow(eth_panel, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(eth_panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+  lv_obj_t *eth_title = lv_label_create(eth_panel);
+  lv_label_set_text(eth_title, "Ethernet");
+  lv_obj_set_style_text_color(eth_title, lv_palette_main(LV_PALETTE_CYAN), 0);
+  lv_obj_set_style_text_font(eth_title, &lv_font_montserrat_14, 0);
+
+  ui_label_eth = lv_label_create(eth_panel);
   lv_label_set_recolor(ui_label_eth, true);
-  lv_obj_set_style_text_color(ui_label_eth, lv_color_white(), 0);
-  lv_obj_align(ui_label_eth, LV_ALIGN_TOP_LEFT, 10, 50);
-  lv_obj_add_flag(ui_label_eth, LV_OBJ_FLAG_HIDDEN); // 이더넷 라벨 렌더링 무효화 (Hide)
+  lv_label_set_text(ui_label_eth, "#FF0000 Offline#");
+  lv_obj_set_style_text_align(ui_label_eth, LV_TEXT_ALIGN_CENTER, 0);
 
-  /* Access Point Label */
-  ui_label_ap = lv_label_create(scr);
+  // --- AP Panel ---
+  lv_obj_t *ap_panel = lv_obj_create(panel_container);
+  lv_obj_set_size(ap_panel, 140, 140);
+  lv_obj_set_style_bg_color(ap_panel, lv_color_make(35, 40, 50), 0);
+  lv_obj_set_style_border_color(ap_panel, lv_color_make(80, 80, 90), 0);
+  lv_obj_set_style_border_width(ap_panel, 1, 0);
+  lv_obj_set_layout(ap_panel, LV_LAYOUT_FLEX);
+  lv_obj_set_flex_flow(ap_panel, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(ap_panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+  lv_obj_t *ap_title = lv_label_create(ap_panel);
+  lv_label_set_text(ap_title, "WiFi AP");
+  lv_obj_set_style_text_color(ap_title, lv_palette_main(LV_PALETTE_YELLOW), 0);
+  lv_obj_set_style_text_font(ap_title, &lv_font_montserrat_14, 0);
+
+  ui_label_ap = lv_label_create(ap_panel);
   lv_label_set_recolor(ui_label_ap, true);
-  lv_obj_set_style_text_color(ui_label_ap, lv_color_white(), 0);
-  lv_obj_align(ui_label_ap, LV_ALIGN_TOP_LEFT, 10, 80);
-  lv_obj_add_flag(ui_label_ap, LV_OBJ_FLAG_HIDDEN); // 숨김
+  lv_label_set_text(ui_label_ap, "#FF0000 Stop#");
+  lv_obj_set_style_text_align(ui_label_ap, LV_TEXT_ALIGN_CENTER, 0);
 
-  /* Clients Info */
-  ui_label_clients = lv_label_create(scr);
-  lv_obj_set_style_text_color(ui_label_clients, lv_palette_lighten(LV_PALETTE_GREY, 1), 0);
-  lv_obj_align(ui_label_clients, LV_ALIGN_TOP_LEFT, 10, 110);
-  lv_obj_add_flag(ui_label_clients, LV_OBJ_FLAG_HIDDEN); // 숨김
-
-  /* Animation Bar for FPS Verification */
-  lv_obj_t *bar = lv_bar_create(scr);
-  lv_obj_set_size(bar, 100, 5);
-  lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, -40);
-  lv_bar_set_range(bar, 0, 100);
-  
-  lv_anim_t a;
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, bar);
-  lv_anim_set_values(&a, 0, 100);
-  lv_anim_set_time(&a, 1000);
-  lv_anim_set_playback_time(&a, 1000);
-  lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_bar_set_value);
-  lv_anim_start(&a);
-
-#ifdef ENABLE_GRADIENT_BG
-  /* 30FPS Test Moving Rect & Gradient Animation */
-  ui_test_rect = lv_obj_create(scr);
-  if (ui_test_rect) {
-    lv_obj_set_size(ui_test_rect, 15, 15);
-    lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
-    lv_obj_set_style_border_width(ui_test_rect, 0, 0); 
-    lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
-    
-    // Create 30Hz timer (1000/30 = 33.3ms)
-    lv_timer_create(move_test_rect_cb, LV_DISP_DEF_REFR_PERIOD, NULL);
-  }
-#endif
+  ui_label_clients = lv_label_create(ap_panel);
+  lv_label_set_text(ui_label_clients, "Clients: 0");
+  lv_obj_set_style_text_color(ui_label_clients, lv_palette_main(LV_PALETTE_GREY), 0);
 }
 
 /**
@@ -842,24 +813,24 @@ void updateLCD() {
   // Update Ethernet Status Label
   if (eth_connected) {
     char buf_eth[64];
-    snprintf(buf_eth, sizeof(buf_eth), "ETH: #00FF00 Connected#\n IP: %s", ETH.localIP().toString().c_str());
+    snprintf(buf_eth, sizeof(buf_eth), "#00FF00 Link Up#\n\n%s", ETH.localIP().toString().c_str());
     lv_label_set_text(ui_label_eth, buf_eth);
   } else {
-    lv_label_set_text(ui_label_eth, "ETH: #FF0000 Disconnected#");
+    lv_label_set_text(ui_label_eth, "#FF0000 Offline#");
   }
 
   // Update AP Status Label
   if (ap_started) {
     char buf_ap[64];
-    snprintf(buf_ap, sizeof(buf_ap), "AP: #00FF00 Running#\n SSID: %s", ap_ssid_custom.c_str());
+    snprintf(buf_ap, sizeof(buf_ap), "#00FF00 Active#\n\n%s", ap_ssid_custom.c_str());
     lv_label_set_text(ui_label_ap, buf_ap);
 
     char buf_clients[32];
-    snprintf(buf_clients, sizeof(buf_clients), "Clients: %d / %d", WiFi.softAPgetStationNum(), AP_MAX_CONN);
+    snprintf(buf_clients, sizeof(buf_clients), "Clients: %d", WiFi.softAPgetStationNum());
     lv_label_set_text(ui_label_clients, buf_clients);
   } else {
-    lv_label_set_text(ui_label_ap, "AP: #FF0000 Stopped#");
-    lv_label_set_text(ui_label_clients, "");
+    lv_label_set_text(ui_label_ap, "#FF0000 Stop#");
+    lv_label_set_text(ui_label_clients, "Clients: 0");
   }
 #endif
 }

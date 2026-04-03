@@ -510,7 +510,27 @@ static lv_obj_t *ui_test_rect;
 static uint32_t frame_cnt = 0;
 static uint32_t fps_val = 0;
 
-/* Removed move_test_rect_cb */
+#ifdef ENABLE_GRADIENT_BG
+/* Timer callback for Full Screen UI changes (Gradient/Color shift logic) */
+void move_test_rect_cb(lv_timer_t * t) {
+  static uint8_t c = 0;
+  c += 2; // Slower, smoother change
+  lv_obj_t *scr = lv_scr_act();
+  if (!scr) return;
+  lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
+  lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
+  
+  if (ui_test_rect) {
+      static int x_dir = 2, y_dir = 2;
+      int cur_x = lv_obj_get_x(ui_test_rect);
+      int cur_y = lv_obj_get_y(ui_test_rect);
+      if (cur_x <= 0 || cur_x >= TFT_HEIGHT - 15) x_dir *= -1;
+      if (cur_y <= 0 || cur_y >= TFT_WIDTH - 15) y_dir *= -1;
+      lv_obj_set_pos(ui_test_rect, cur_x + x_dir, cur_y + y_dir);
+  }
+}
+#endif
 
 #ifdef ENABLE_TE_SYNC
 #define TE_PIN 21
@@ -696,10 +716,15 @@ void initLVGLUI() {
   lv_obj_t *scr = lv_scr_act();
   if (!scr) return;
 
-  // 기본 배경색 설정 (짙은 파란색 계열 테마 적용)
+#ifdef ENABLE_GRADIENT_BG
+  // 짙은 파란색 계열 그라데이션 테마 적용
   lv_obj_set_style_bg_color(scr, lv_color_make(15, 20, 35), 0);
   lv_obj_set_style_bg_grad_color(scr, lv_color_make(30, 45, 65), 0);
   lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
+#else
+  // 단색 배경 (매크로 비활성화 시)
+  lv_obj_set_style_bg_color(scr, lv_color_make(0, 0, 0), 0);
+#endif
   
   // 화면 잘림 현상을 확인하기 위한 전체 테두리 (디버깅용)
   lv_obj_set_style_border_color(scr, lv_color_make(255, 255, 255), 0);
@@ -830,6 +855,20 @@ void initLVGLUI() {
   ui_label_clients = lv_label_create(ap_panel);
   lv_label_set_text(ui_label_clients, "Clients: 0");
   lv_obj_set_style_text_color(ui_label_clients, lv_palette_main(LV_PALETTE_GREY), 0);
+
+#ifdef ENABLE_GRADIENT_BG
+  /* Test Moving Rect & Gradient Animation Registration */
+  ui_test_rect = lv_obj_create(scr);
+  if (ui_test_rect) {
+    lv_obj_set_size(ui_test_rect, 15, 15);
+    lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
+    lv_obj_set_style_border_width(ui_test_rect, 0, 0); 
+    lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
+    
+    // Create 60Hz timer (1000/16 = 62.5 FPS)
+    lv_timer_create(move_test_rect_cb, 16, NULL);
+  }
+#endif
 }
 
 /**
@@ -1657,7 +1696,20 @@ void setup() {
   // Step 5: Initialize LCD (Dynamically detected)
 #ifdef ENABLE_LCD
   lcd_detected = detectLCD();
-  if (false && lcd_detected) {
+  if (lcd_detected) {
+    Serial.println("\r\n--- LCD Control Pin Configuration ---");
+    Serial.printf("  TFT_WR  : GPIO %d\n", TFT_WR);
+    Serial.printf("  TFT_DC  : GPIO %d\n", TFT_DC);
+#if defined(TFT_CS) && TFT_CS >= 0
+    Serial.printf("  TFT_CS  : GPIO %d\n", TFT_CS);
+#else
+    Serial.println("  TFT_CS  : DISABLED (-1)");
+#endif
+#if defined(TFT_RST) && TFT_RST >= 0
+    Serial.printf("  TFT_RST : GPIO %d\n", TFT_RST);
+#endif
+    Serial.println("-------------------------------------\n");
+
 #if defined(TFT_BL) && TFT_BL >= 0
     pinMode(LCD_BL_PIN, OUTPUT);
     digitalWrite(LCD_BL_PIN, HIGH); // Turn on backlight
@@ -1665,15 +1717,23 @@ void setup() {
     Serial.println("Done.");
 
 #if defined(TFT_RST) && TFT_RST >= 0
+    Serial.printf("Step 5: Resetting LCD (GPIO %d)... ", TFT_RST);
     pinMode(TFT_RST, OUTPUT);
     digitalWrite(TFT_RST, LOW);
     delay(100);
     digitalWrite(TFT_RST, HIGH);
     delay(150);
+    Serial.println("Done.");
 #endif
 
     /* Initialize LCD DMA */
     tft.init();
+
+#ifdef USE_LOVYANGFX
+    Serial.printf("  [DIAG] LCD Panel ID: 0x%08X\n", (uint32_t)tft.readData32());
+#else
+    Serial.printf("  [DIAG] LCD Panel ID: 0x%04X\n", (uint32_t)tft.readID());
+#endif
 
 #ifdef ENABLE_TE_SYNC
     // ... (TE_SYNC 블록)
@@ -1717,7 +1777,7 @@ void setup() {
     disp_drv.draw_buf = &draw_buf; // CRITICAL: This was missing!
     
     // 강제 전체 업데이트 해제 (부분 업데이트로 복귀하여 프레임레이트 복구)
-    disp_drv.full_refresh = 0; 
+    disp_drv.full_refresh = 1; 
 
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     

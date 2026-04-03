@@ -15,7 +15,7 @@ public:
     {
       auto cfg = _bus_instance.config();
       cfg.port = 0; // I2S 포트 (ESP32-S3에서는 I2S 또는 LCD_CAM)
-      cfg.freq_write = 5000000;
+      cfg.freq_write = 20000000;
       
       cfg.pin_wr = TFT_WR;
       cfg.pin_rd = TFT_RD;
@@ -53,7 +53,7 @@ public:
       cfg.offset_rotation = 0;
       cfg.dummy_read_pixel = 8;
       cfg.dummy_read_bits = 1;
-      cfg.readable = false;
+      cfg.readable = true;
       cfg.invert = false;
       cfg.rgb_order = false;
       cfg.dlen_16bit = true;

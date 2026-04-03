@@ -20,6 +20,7 @@
 // #define LILYGO_T_ETH_LITE_ESP32S3
 //#define ENABLE_ETHERNET  // Enable Ethernet Features (Default)
 //#define ENABLE_TE_SYNC     // Enable TE(Tearing Effect) Hardware Sync Mode (40Hz limit)
+#define ENABLE_GRADIENT_BG // 배경 그라데이션 활성화
 
 // Product Link : N.A
 // #define LILYGO_T_ETH_ELITE_ESP32S3

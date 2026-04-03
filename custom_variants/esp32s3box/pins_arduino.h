@@ -38,16 +38,8 @@ static const uint8_t T12 = 12;
 static const uint8_t T13 = 13;
 static const uint8_t T14 = 14;
 
-// ============================================================
-// TFT LCD Pins — T-ETH-Lite-ESP32S3 actual wiring
-// (replaces esp32s3box defaults: DC=4, CS=5, MOSI=6, BL=45, RST=48)
-// ============================================================
-#define TFT_MOSI  3   // LCD SDA / MOSI
-#define TFT_CLK   2   // LCD SCL / SCLK
-#define TFT_MISO  1   // LCD SDO / MISO (optional)
-#define TFT_CS    4   // LCD CS
-#define TFT_DC    8   // LCD DC / RS
-#define TFT_RST  15   // LCD RST
-#define TFT_BL   16   // LCD Backlight
+
+// TFT 관련 핀들은 platformio.ini의 빌드 플래그(-D)를 
+// 온전히 적용받기 위해 이곳에서 선언하지 않습니다.
 
 #endif /* Pins_Arduino_h */

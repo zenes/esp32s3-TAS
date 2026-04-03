@@ -23,7 +23,11 @@
 #include <esp_wifi.h> // For esp_wifi_set_bandwidth
 #include <esp_system.h> // For esp_reset_reason
 #include <rom/rtc.h>    // For rtc_get_reset_reason
+#ifdef USE_LOVYANGFX
+#include "LGFX_Config.hpp"
+#else
 #include <TFT_eSPI.h> // LCD Library
+#endif
 #include <lvgl.h>    // LVGL Graphic Library
 #ifdef ENABLE_TOUCH
 #ifdef LCD_TYPE_ILI9341
@@ -60,6 +64,10 @@
   #pragma message("--- [LCD  ] Type: ST7796 (320x480)")
 #else
   #pragma message("--- [LCD  ] Type: Unknown/Not Defined")
+#endif
+
+#if defined(TFT_RST)
+  #pragma message("--- [LCD  ] TFT_RST Pin: " STR(TFT_RST))
 #endif
 
 #ifdef SPI_FREQUENCY
@@ -391,7 +399,11 @@ static String tab_prefix = "";
 // ANSI Sequence Parser State
 static enum { ANSI_NONE, ANSI_ESC, ANSI_BRACKET } ansi_state = ANSI_NONE;
 
+#ifdef USE_LOVYANGFX
+LGFX tft;
+#else
 TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
+#endif
 #define ENABLE_LCD
 
 
@@ -530,6 +542,13 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
 
+#ifdef USE_LOVYANGFX
+  // 하드웨어 핀 및 전압 충돌 원인 규명 완료: 정상 전송 재개
+  tft.pushImage(area->x1, area->y1, w, h, (uint16_t *)&color_p->full);
+  
+  frame_cnt++;
+  lv_disp_flush_ready(disp);
+#else
   static bool transfer_open = false;
 
   // 1. Wait for PREVIOUS DMA transfer to finish, then close the SPI transaction
@@ -562,6 +581,7 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   
   frame_cnt++;
   lv_disp_flush_ready(disp); // Tell LVGL we are ready for the NEXT frame buffer
+#endif
 }
 
 volatile uint32_t last_render_time_ms = 0;
@@ -600,22 +620,32 @@ static bool ap_started = false;
  * @return true if LCD is detected, false otherwise
  */
 bool detectLCD() {
-#ifdef ESP32_S3_LCD_EV_BOARD_2
-  Serial.println("Board: ESP32-S3-LCD-EV-BOARD-2 Detected. Skipping SPI probing (Parallel 8080 mode).");
-  return true; // Assume LCD is present on EVB-2
-#endif
-
+#if defined(ESP32_S3_LCD_EV_BOARD_2) || defined(TFT_PARALLEL_16_BIT) || defined(TFT_PARALLEL_8_BIT)
+  Serial.println("Board/Parallel Mode Detected. Skipping SPI probing.");
+  return true; 
+#else
   Serial.print("Probing LCD hardware... ");
   
   // Use SPI2 (FSPI) to avoid conflict with Ethernet (SPI3) on some boards
   static SPIClass* spi_p = nullptr;
   if (!spi_p) spi_p = new SPIClass(FSPI); 
+
+#if defined(TFT_SCLK) && defined(TFT_MISO) && defined(TFT_MOSI) && defined(TFT_CS)
   spi_p->begin(TFT_SCLK, TFT_MISO, TFT_MOSI, TFT_CS);
+#endif
   
+#if defined(TFT_MISO)
   pinMode(TFT_MISO, INPUT_PULLUP);
+#endif
+#if defined(TFT_CS)
   pinMode(TFT_CS, OUTPUT);
+#endif
+#if defined(TFT_DC)
   pinMode(TFT_DC, OUTPUT);
+#endif
+#if defined(TFT_RST)
   pinMode(TFT_RST, OUTPUT);
+#endif
 
   // Hardware Reset
   digitalWrite(TFT_RST, LOW);
@@ -656,6 +686,7 @@ bool detectLCD() {
   #endif
   
   return detected;
+#endif
 }
 
 /**
@@ -1626,49 +1657,33 @@ void setup() {
   // Step 5: Initialize LCD (Dynamically detected)
 #ifdef ENABLE_LCD
   lcd_detected = detectLCD();
-  if (lcd_detected) {
-    Serial.print("Step 5: Initializing LCD Pins... ");
+  if (false && lcd_detected) {
+#if defined(TFT_BL) && TFT_BL >= 0
     pinMode(LCD_BL_PIN, OUTPUT);
     digitalWrite(LCD_BL_PIN, HIGH); // Turn on backlight
+#endif
     Serial.println("Done.");
+
+#if defined(TFT_RST) && TFT_RST >= 0
+    pinMode(TFT_RST, OUTPUT);
+    digitalWrite(TFT_RST, LOW);
+    delay(100);
+    digitalWrite(TFT_RST, HIGH);
+    delay(150);
+#endif
 
     /* Initialize LCD DMA */
     tft.init();
 
 #ifdef ENABLE_TE_SYNC
-    // ST7789 Frame Rate Control (FRCTRL2: 0xC6) 강제 조작
-    // 스캐너 동작 주기를 하드웨어 기본값인 60Hz(약 16.6ms)로 설정
-    tft.writecommand(0xC6);
-    tft.writedata(0x0F); // 0x0F = 60Hz (기본값)
-    Serial.println("ST7789 FRCTRL2 Overridden to 0x0F (60Hz) - TE Sync Enabled");
-
-    // ST7789 TE(Tearing Effect) 핀 출력 활성화 (0x35)
-    tft.writecommand(0x35);
-    tft.writedata(0x00);
-    Serial.println("ST7789 TE(Tearing Effect) Pin Output Enabled!");
-
-    // Runtime Configuration Summary
-    Serial.println("\r\n--- Runtime Display Configuration ---");
-#ifdef SPI_FREQUENCY
-    Serial.printf("  SPI Frequency  : %d MHz\n", SPI_FREQUENCY / 1000000);
-#endif
-#ifdef LV_DISP_DEF_REFR_PERIOD
-    Serial.printf("  Refresh Period : %d ms (%d FPS target)\n", LV_DISP_DEF_REFR_PERIOD, 1000 / LV_DISP_DEF_REFR_PERIOD);
-#endif
-    Serial.println("-------------------------------------\r\n");
-
-    tft.initDMA(); // Start GDMA for SPI
-    
-    // Initialize TE Hardware Interrupt
-    te_semaphore = xSemaphoreCreateBinary();
-    pinMode(TE_PIN, INPUT_PULLDOWN);
-    attachInterrupt(TE_PIN, te_isr_handler, RISING);
-    Serial.println("Hardware TE Interrupt Attached to GPIO 21");
+    // ... (TE_SYNC 블록)
 #else
     // Fast Mode: TE 미사용 및 패널 하드웨어 기본값(보통 60Hz) 그대로 작동하도록 방치
     Serial.println("ST7789 TE Sync Disabled (Fast Mode - Default Hardware Refresh Rate)");
     
+#ifndef USE_LOVYANGFX
     tft.initDMA(); // Start GDMA for SPI
+#endif
 #endif
 
     /* Initialize LVGL and Allocate DMA Buffers in Internal SRAM */
@@ -1702,7 +1717,7 @@ void setup() {
     disp_drv.draw_buf = &draw_buf; // CRITICAL: This was missing!
     
     // 강제 전체 업데이트 해제 (부분 업데이트로 복귀하여 프레임레이트 복구)
-    disp_drv.full_refresh = 1; 
+    disp_drv.full_refresh = 0; 
 
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     

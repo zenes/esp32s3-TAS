@@ -1,5 +1,12 @@
 # 프로젝트 진행 상황
 
+## 2026-04-06
+### LovyanGFX 비동기 DMA 최적화 및 LCD 병렬 포트 분석 완료
+*   **LovyanGFX 성능 개선**: `my_disp_flush` 함수에 비동기 DMA 전송(`pushImageDMA`, `waitDMA`)을 적용하여 렌더링 프레임 레이트(FPS) 저하 문제를 해결하고 UI 응답성 개선.
+*   **UI 패널 가시성 제어**: 성능 테스트 및 디버깅을 위해 `panel_container`(카드형 대시보드)에 `LV_OBJ_FLAG_HIDDEN`을 적용하여 임시로 숨김 처리.
+*   **LCD 인터페이스 문서 업데이트**: `lcd-impl-plan.md`에 `evb-lcd3` 환경에서 사용하는 16비트 병렬(MCU 8080) 핀맵 정보를 추가하고, 보드별 하드웨어 제약 사항을 명확히 함.
+*   **빌드 안정성 검증**: `evb-lcd3` 환경에서 PlatformIO 빌드 성공을 확인하고 신규 DMA 로직의 안정성 확보.
+
 ## 2026-04-03
 ### 하드웨어 레퍼런스 문서화 및 LCD 성능 최적화
 *   **하드웨어 정보 통합**: `examples/tas/docs/hardware_reference.md`를 신규 생성하여 LilyGO T-ETH-Lite-S3 장비의 핀맵, LCD 사양, 버튼 및 주변기기 정보를 상세히 기록.

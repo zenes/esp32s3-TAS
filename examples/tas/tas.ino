@@ -561,16 +561,34 @@ void IRAM_ATTR te_isr_handler() {
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
+  static bool transfer_open = false;
 
 #ifdef USE_LOVYANGFX
-  // 하드웨어 핀 및 전압 충돌 원인 규명 완료: 정상 전송 재개
-  tft.pushImage(area->x1, area->y1, w, h, (uint16_t *)&color_p->full);
+  // 1. Wait for PREVIOUS DMA transfer to finish
+  if (transfer_open) {
+    tft.waitDMA();
+    tft.endWrite();
+  }
+
+  // 2. Start new transfer session
+  tft.startWrite();
   
+#ifdef ENABLE_TE_SYNC
+  // 3. V-Sync(TE) 동기화 복구 (첫 번째 조각 전송 전에만 스캐너 대기)
+  static bool wait_for_te = true;
+  if (wait_for_te && te_semaphore != NULL) {
+      xSemaphoreTake(te_semaphore, pdMS_TO_TICKS(100)); // TE 신호 한 사이클 대기
+  }
+  wait_for_te = lv_disp_flush_is_last(disp); // 마지막 조각을 보낼 때 다음 프레임을 위해 대기 락 설정
+#endif
+
+  // 4. Start non-blocking DMA transfer
+  tft.pushImageDMA(area->x1, area->y1, w, h, (uint16_t *)&color_p->full);
+  
+  transfer_open = true;
   frame_cnt++;
   lv_disp_flush_ready(disp);
 #else
-  static bool transfer_open = false;
-
   // 1. Wait for PREVIOUS DMA transfer to finish, then close the SPI transaction
   if (transfer_open) {
     if (tft.dmaBusy()) {
@@ -804,6 +822,7 @@ void initLVGLUI() {
   lv_obj_t *panel_container = lv_obj_create(scr);
   lv_obj_set_size(panel_container, TFT_WIDTH - 20, 160);
   lv_obj_align(panel_container, LV_ALIGN_TOP_MID, 0, 50);
+  lv_obj_add_flag(panel_container, LV_OBJ_FLAG_HIDDEN); 
   lv_obj_set_style_bg_opa(panel_container, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(panel_container, 0, 0);
   lv_obj_set_style_pad_all(panel_container, 0, 0);

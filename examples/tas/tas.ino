@@ -1848,11 +1848,11 @@ void setup() {
 #ifdef ENABLE_TE_SYNC
     // Set refresh period to 16ms for 60 FPS (하드웨어 60Hz와 동기화)
     lv_timer_t * refr_timer = _lv_disp_get_refr_timer(disp_obj);
-    if (refr_timer) lv_timer_set_period(refr_timer, 16);
+    if (refr_timer) lv_timer_set_period(refr_timer, LV_DISP_DEF_REFR_PERIOD);
 #else
     // Set refresh period to 16ms for 60 FPS (최대 성능)
     lv_timer_t * refr_timer = _lv_disp_get_refr_timer(disp_obj);
-    if (refr_timer) lv_timer_set_period(refr_timer, 16);
+    if (refr_timer) lv_timer_set_period(refr_timer, LV_DISP_DEF_REFR_PERIOD);
 #endif
 
     lcd_initialized = true; 

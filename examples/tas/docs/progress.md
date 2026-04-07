@@ -1,5 +1,9 @@
 # 프로젝트 진행 상황
 
+## 2026-04-07
+### LVGL 새로고침 주기 최적화 및 빌드 설정 연동
+*   **하드코딩 제거**: `tas.ino` 내에 `16ms`(60 FPS)로 고정되어 있던 LVGL 새로고침 주기를 제거하고, `platformio.ini`의 `LV_DISP_DEF_REFR_PERIOD` 설정을 따르도록 수정하여 빌드 타임 설정 유연성 확보.
+
 ## 2026-04-06
 ### LovyanGFX 비동기 DMA 최적화 및 LCD 병렬 포트 분석 완료
 *   **LovyanGFX 성능 개선**: `my_disp_flush` 함수에 비동기 DMA 전송(`pushImageDMA`, `waitDMA`)을 적용하여 렌더링 프레임 레이트(FPS) 저하 문제를 해결하고 UI 응답성 개선.

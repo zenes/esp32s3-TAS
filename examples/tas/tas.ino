@@ -514,20 +514,28 @@ static uint32_t fps_val = 0;
 /* Timer callback for Full Screen UI changes (Gradient/Color shift logic) */
 void move_test_rect_cb(lv_timer_t * t) {
   static uint8_t c = 0;
-  c += 2; // Slower, smoother change
+  c += 2;
   lv_obj_t *scr = lv_scr_act();
   if (!scr) return;
   lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
   lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
   lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
-  
+
   if (ui_test_rect) {
+      // 화면 크기: landscape 320x240 고정
+      // (TFT_WIDTH=240, TFT_HEIGHT=320은 세로 기준 빌드플래그 — 실제 LVGL 화면과 반대)
+      static const int BALL_SIZE = 25;
+      static const int SCR_W = 320;
+      static const int SCR_H = 240;
+      static int x_pos = (SCR_W - BALL_SIZE) / 2;  // 147
+      static int y_pos = (SCR_H - BALL_SIZE) / 2;  // 107
       static int x_dir = 2, y_dir = 2;
-      int cur_x = lv_obj_get_x(ui_test_rect);
-      int cur_y = lv_obj_get_y(ui_test_rect);
-      if (cur_x <= 0 || cur_x >= TFT_HEIGHT - 15) x_dir *= -1;
-      if (cur_y <= 0 || cur_y >= TFT_WIDTH - 15) y_dir *= -1;
-      lv_obj_set_pos(ui_test_rect, cur_x + x_dir, cur_y + y_dir);
+
+      if (x_pos <= 0 || x_pos >= SCR_W - BALL_SIZE) x_dir *= -1;
+      if (y_pos <= 0 || y_pos >= SCR_H - BALL_SIZE) y_dir *= -1;
+      x_pos += x_dir;
+      y_pos += y_dir;
+      lv_obj_set_pos(ui_test_rect, x_pos, y_pos);
   }
 }
 #endif
@@ -733,6 +741,7 @@ bool detectLCD() {
 void initLVGLUI() {
   lv_obj_t *scr = lv_scr_act();
   if (!scr) return;
+  lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF); // 스크롤바 숨김
 
 #ifdef ENABLE_GRADIENT_BG
   // 짙은 파란색 계열 그라데이션 테마 적용
@@ -876,16 +885,18 @@ void initLVGLUI() {
   lv_obj_set_style_text_color(ui_label_clients, lv_palette_main(LV_PALETTE_GREY), 0);
 
 #ifdef ENABLE_GRADIENT_BG
-  /* Test Moving Rect & Gradient Animation Registration */
+  /* 노란 사각형 공 — 단순 rect (LV_RADIUS_CIRCLE 제거로 DMA hang 방지) */
   ui_test_rect = lv_obj_create(scr);
   if (ui_test_rect) {
-    lv_obj_set_size(ui_test_rect, 15, 15);
+    lv_obj_set_size(ui_test_rect, 25, 25);
     lv_obj_set_style_bg_color(ui_test_rect, lv_palette_main(LV_PALETTE_YELLOW), 0);
-    lv_obj_set_style_border_width(ui_test_rect, 0, 0); 
-    lv_obj_align(ui_test_rect, LV_ALIGN_CENTER, 0, 50);
-    
-    // Create 60Hz timer (1000/16 = 62.5 FPS)
+    lv_obj_set_style_bg_opa(ui_test_rect, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ui_test_rect, 0, 0);
+    lv_obj_set_style_radius(ui_test_rect, LV_RADIUS_CIRCLE, 0);       // 원형으로 변경
+    // CENTER align 제거: set_pos()가 오프셋이 아닌 절대좌표로 동작하도록
+    lv_obj_set_pos(ui_test_rect, (320 - 25) / 2, (240 - 25) / 2); // 화면 중앙
     lv_timer_create(move_test_rect_cb, 16, NULL);
+
   }
 #endif
 }
@@ -1771,10 +1782,10 @@ void setup() {
     /* Initialize LVGL and Allocate DMA Buffers in Internal SRAM */
     lv_init();
     
-    // Allocate 2 x 80KB buffers in Internal SRAM with DMA capability
-    // 64 lines exactly matches the 32KB L1 Data Cache on ESP32-S3 (240x64x2 = 30.7KB)
-    size_t lines = 64; 
-    size_t buf_size = LCD_WIDTH * lines * sizeof(lv_color_t);
+    // Landscape 모드: hor_res = LCD_HEIGHT = 320 → 행 너비 = 320
+    // 64 lines: 320*64*2 = 40KB per buffer (DMA 캐시 효율 최적)
+    size_t lines = 64;
+    size_t buf_size = LCD_HEIGHT * lines * sizeof(lv_color_t); // ← LCD_HEIGHT(320) 사용
     
     buf1 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     buf2 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -1782,12 +1793,13 @@ void setup() {
     if (buf1 == NULL || buf2 == NULL) {
         Serial.println("Failed to allocate DMA buffers! Falling back to SRAM Single...");
         if(buf1) free(buf1);
-        static lv_color_t sram_single[LCD_WIDTH * 20];
-        lv_disp_draw_buf_init(&draw_buf, sram_single, NULL, LCD_WIDTH * 20);
+        static lv_color_t sram_single[LCD_HEIGHT * 20]; // ← LCD_HEIGHT(320) 사용
+        lv_disp_draw_buf_init(&draw_buf, sram_single, NULL, LCD_HEIGHT * 20);
     } else {
         Serial.printf("DMA Double Buffers allocated: 2 x %u bytes\n", buf_size);
-        lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_WIDTH * lines);
+        lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_HEIGHT * lines); // ← LCD_HEIGHT(320) 사용
     }
+
 
     /* Initialize the display driver for LVGL */
     static lv_disp_drv_t disp_drv;

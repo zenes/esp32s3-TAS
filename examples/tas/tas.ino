@@ -1717,7 +1717,9 @@ void setup() {
   lcd_detected = detectLCD();
   if (lcd_detected) {
     Serial.println("\r\n--- LCD Control Pin Configuration ---");
+#if defined(TFT_WR)
     Serial.printf("  TFT_WR  : GPIO %d\n", TFT_WR);
+#endif
     Serial.printf("  TFT_DC  : GPIO %d\n", TFT_DC);
 #if defined(TFT_CS) && TFT_CS >= 0
     Serial.printf("  TFT_CS  : GPIO %d\n", TFT_CS);
@@ -1751,7 +1753,8 @@ void setup() {
 #ifdef USE_LOVYANGFX
     Serial.printf("  [DIAG] LCD Panel ID: 0x%08X\n", (uint32_t)tft.readData32());
 #else
-    Serial.printf("  [DIAG] LCD Panel ID: 0x%04X\n", (uint32_t)tft.readID());
+    // TFT_eSPI: readID() 미지원 버전의 경우 readcommand8(0x04)로 대체
+    Serial.printf("  [DIAG] LCD Panel ID: 0x%02X\n", (uint32_t)tft.readcommand8(0x04));
 #endif
 
 #ifdef ENABLE_TE_SYNC

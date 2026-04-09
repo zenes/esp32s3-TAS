@@ -6,8 +6,17 @@
 
 class LGFX : public lgfx::LGFX_Device
 {
-  lgfx::Panel_ILI9341 _panel_instance;
+#ifdef TFT_PARALLEL_16_BIT
   lgfx::Bus_Parallel16 _bus_instance;
+#elif defined(TFT_PARALLEL_8_BIT)
+  lgfx::Bus_Parallel8 _bus_instance;
+#endif
+
+#ifdef LCD_TYPE_ST7789
+  lgfx::Panel_ST7789 _panel_instance;
+#else
+  lgfx::Panel_ILI9341 _panel_instance;
+#endif
 
 public:
   LGFX(void)
@@ -29,6 +38,7 @@ public:
       cfg.pin_d5 = TFT_D5;
       cfg.pin_d6 = TFT_D6;
       cfg.pin_d7 = TFT_D7;
+#ifdef TFT_PARALLEL_16_BIT
       cfg.pin_d8 = TFT_D8;
       cfg.pin_d9 = TFT_D9;
       cfg.pin_d10 = TFT_D10;
@@ -37,6 +47,7 @@ public:
       cfg.pin_d13 = TFT_D13;
       cfg.pin_d14 = TFT_D14;
       cfg.pin_d15 = TFT_D15;
+#endif
 
       _bus_instance.config(cfg);
       _panel_instance.setBus(&_bus_instance);
@@ -54,9 +65,22 @@ public:
       cfg.dummy_read_pixel = 8;
       cfg.dummy_read_bits = 1;
       cfg.readable = true;
+#ifdef TFT_INVERSION_ON
+      cfg.invert = true;
+#else
       cfg.invert = false;
+#endif
+
+#if defined(TFT_RGB_ORDER) && (TFT_RGB_ORDER == 1)
+      cfg.rgb_order = true;
+#else
       cfg.rgb_order = false;
+#endif
+#ifdef TFT_PARALLEL_16_BIT
       cfg.dlen_16bit = true;
+#else
+      cfg.dlen_16bit = false;
+#endif
       cfg.bus_shared = false;
 
       _panel_instance.config(cfg);

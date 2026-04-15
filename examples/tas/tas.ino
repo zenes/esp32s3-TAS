@@ -117,10 +117,14 @@
 #include <lwip/apps/lwiperf.h>
 #include <AsyncUDP.h>
 #include <inttypes.h>
+#include "toe_iperf.h"
+#include "socket_bridge.h"
 #include "w5500_base.h"
 #include "soc/gpio_struct.h"
 #include "driver/gpio.h"
 #include "soc/io_mux_reg.h"
+#include "cpu_stats.h"
+
 
 // Global Traffic Stats
 struct InterfaceStats {
@@ -336,6 +340,12 @@ static bool ping_running = false;
 static String ping_target = "";
 static unsigned long last_ping_time = 0;
 
+// Top Monitoring State
+static bool top_running = false;
+static unsigned long last_top_time = 0;
+CPUStats cpuStats;
+
+
 void refreshLine() {
   // Move cursor to beginning of line (using \r)
   Serial.print("\r> ");
@@ -382,8 +392,9 @@ void installHooks() {
 
 // Command List for Autocomplete
 const char* shell_commands[] = {
-  "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "ifconfig", "arp", "dhcp", "iperf", "udp_iperf", "toe_iperf"
+  "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "top", "ifconfig", "arp", "dhcp", "iperf", "udp_iperf", "toe_iperf"
 };
+
 const int shell_cmd_count = sizeof(shell_commands) / sizeof(shell_commands[0]);
 
 // Shell History
@@ -500,6 +511,8 @@ static lv_obj_t *ui_label_eth;
 static lv_obj_t *ui_label_ap;
 static lv_obj_t *ui_label_clients;
 static lv_obj_t *ui_label_fps;
+static lv_obj_t *ui_label_cpu0;  // Core 0 시스템 CPU 부하
+static lv_obj_t *ui_label_cpu1;  // Core 1 시스템 CPU 부하
 #ifdef ENABLE_TE_SYNC
 static lv_obj_t *ui_label_te;
 #endif
@@ -827,6 +840,18 @@ void initLVGLUI() {
   lv_label_set_text(ui_label_te, "TE: --");
 #endif
 
+  /* Core 0 CPU Load Label (System/Net Core) */
+  ui_label_cpu0 = lv_label_create(ui_debug_panel);
+  lv_obj_set_style_text_font(ui_label_cpu0, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(ui_label_cpu0, lv_palette_main(LV_PALETTE_CYAN), 0);
+  lv_label_set_text(ui_label_cpu0, "C0:  0.0%");
+
+  /* Core 1 CPU Load Label (App/UI Core) */
+  ui_label_cpu1 = lv_label_create(ui_debug_panel);
+  lv_obj_set_style_text_font(ui_label_cpu1, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(ui_label_cpu1, lv_palette_main(LV_PALETTE_LIME), 0);
+  lv_label_set_text(ui_label_cpu1, "C1:  0.0%");
+
   /* === Status Dashboard Panel === */
   lv_obj_t *panel_container = lv_obj_create(scr);
   lv_obj_set_size(panel_container, TFT_WIDTH - 20, 160);
@@ -1004,9 +1029,14 @@ void handleShell() {
       if (ping_running) {
         ping_running = false;
         Serial.print("^C\r\nStopping ping.\r\n> ");
+      } else if (top_running) {
+        top_running = false;
+        cpuStats.clear();
+        Serial.print("^C\r\nStopping top.\r\n> ");
       } else {
         Serial.print("^C\r\n> ");
       }
+
       inputString = "";
       cursor_pos = 0;
       history_index = -1;
@@ -1120,7 +1150,9 @@ void handleShell() {
       Serial.print("  traffic [on/off]- Show NAT sessions (if on, periodically shows speed)\r\n");
 #endif
       Serial.print("  ping <host>     - Ping a host (domain or IP)\r\n");
+      Serial.print("  top             - Show real-time CPU usage per core (Press Ctrl+C to stop)\r\n");
       Serial.print("  ifconfig        - Show network interface configurations\r\n");
+
       Serial.print("  arp             - Show connected AP clients (MAC/RSSI)\r\n");
 #ifdef ENABLE_ETHERNET
       Serial.print("  dhcp            - Show DHCP server leases (IP/MAC mappings)\r\n");
@@ -1306,6 +1338,12 @@ void handleShell() {
         Serial.print("Usage: ping <host>\r\n");
       }
     }
+    else if (cmd.equalsIgnoreCase("top")) {
+      top_running = true;
+      last_top_time = 0; // Start immediately
+      cpuStats.clear();
+      Serial.print("Starting top monitoring...\r\n");
+    }
 #ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("ifconfig") || cmd.equalsIgnoreCase("ip")) {
       Serial.print("\r\n--- Interface Configuration ---\r\n");
@@ -1357,6 +1395,7 @@ void handleShell() {
       esp_wifi_ap_get_sta_list(&stationList);
 
       if (ap_netif && stationList.num > 0) {
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
         esp_netif_pair_mac_ip_t mac_ip_pair[10]; 
         int num_clients = stationList.num > 10 ? 10 : stationList.num;
         
@@ -1389,6 +1428,9 @@ void handleShell() {
         } else {
           Serial.println("  Failed to query DHCP server.");
         }
+#else
+        Serial.println("  [Info] Connected clients exist, but detailed IP/MAC listing requires Arduino Core 3.0.0+");
+#endif
       } else {
         Serial.println("  No active DHCP leases (or AP down).");
       }
@@ -1704,6 +1746,9 @@ void setup() {
   preferences.end();
   logMsg(LOG_INFO, "Loaded settings: SSID='%s'", ap_ssid_custom.c_str());
 
+  // CPU Idle Hook 캘리브레이션 (WiFi 시작 전에 실행하여 정확한 100% idle 기준 확보)
+  cpuStats.begin();
+
   // Step 1: Start WiFi AP immediately (Always-On Priority)
   logMsg(LOG_INFO, "Step 1: Starting WiFi AP (softAP)... %s", 
     WiFi.softAP(ap_ssid_custom.c_str(), ap_pw_custom.c_str(), AP_CHANNEL, 0, AP_MAX_CONN) ? "Success" : "FAILED");
@@ -1873,6 +1918,8 @@ void setup() {
     lcd_initialized = true; 
     Serial.println("Done.");
 
+    // (cpuStats.begin()은 WiFi 시작 전에 이미 호출됨)
+
     Serial.print("Step 7: LVGL UI creation... ");
     tft.setRotation(1); // Landscape
     initLVGLUI();
@@ -1984,6 +2031,14 @@ void loop() {
     }
   }
 
+  // Real-time Top Monitoring
+  if (top_running) {
+    if (currentMillis - last_top_time >= 1000) {
+      last_top_time = currentMillis;
+      cpuStats.showTop();
+    }
+  }
+
   // Update LVGL tick and timer handler
   lv_timer_handler();
 
@@ -1995,6 +2050,25 @@ void loop() {
         char buf_fps[32]; // 크기 늘림
         snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %ums", fps_val, last_render_time_ms);
         lv_label_set_text(ui_label_fps, buf_fps);
+    }
+
+    // CPU 시스템 부하 갱신 및 UI 업데이트 (Idle Hook + 10s Warm-up)
+    cpuStats.update();
+    if (lcd_initialized && ui_label_cpu0 && ui_label_cpu1) {
+        char buf_cpu[24];
+        if (!cpuStats.isReady()) {
+            // warm-up 중: 깜빡이는 점으로 진행 중임을 표시
+            static uint8_t dot_cycle = 0;
+            if (++dot_cycle > 3) dot_cycle = 0;
+            const char* dots[] = {"C0: .", "C0: ..", "C0: ...", "C0:    "};
+            lv_label_set_text(ui_label_cpu0, dots[dot_cycle]);
+            lv_label_set_text(ui_label_cpu1, "C1: cal");
+        } else {
+            snprintf(buf_cpu, sizeof(buf_cpu), "C0:%5.1f%%", cpuStats.getLoad(0));
+            lv_label_set_text(ui_label_cpu0, buf_cpu);
+            snprintf(buf_cpu, sizeof(buf_cpu), "C1:%5.1f%%", cpuStats.getLoad(1));
+            lv_label_set_text(ui_label_cpu1, buf_cpu);
+        }
     }
     
 #ifdef ENABLE_TE_SYNC

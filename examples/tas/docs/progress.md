@@ -1,5 +1,31 @@
 # 프로젝트 진행 상황
 
+## 2026-04-15
+### CPU 부하 모니터링 시스템 완성 (UI 통합 + 직렬 모니터 개선)
+
+#### 구현 완료 사항
+*   **`cpu_stats.h` 전면 재설계 (v4 — Warm-up Locked Baseline)**
+    *   기존 단일 시점 캘리브레이션 방식의 구조적 왜곡(`max_idle_ticks`가 부팅 초기 이상값에 고정되는 문제) 해결.
+    *   **10초 Warm-up 자동 탐색 방식** 도입: 부팅 후 10초 동안 매 1초마다 `idle tps` 최댓값을 추적하여 baseline을 자동 확정(lock). 부팅 burst(NVS, WiFi 초기화 등)가 모두 수렴된 후의 가장 idle한 상태를 기준으로 삼음.
+    *   `esp_timer_get_time()` 기반 μs 정밀 시간 측정 유지.
+    *   `isReady()` 메서드 추가: UI에서 warm-up 완료 여부를 조회 가능.
+    *   `showTop()` 출력을 ANSI 이스케이프 코드 제거 → 아두이노 표준 `Serial.println()` 방식으로 교체. 시리얼 모니터에서 줄 밀림 현상 해결.
+
+*   **`tas.ino` UI 업데이트 로직 개선**
+    *   Warm-up 중: `C0: .` / `C1: cal` 텍스트를 1초 주기로 순환 표시 (진행 중임을 시각적으로 표현).
+    *   Warm-up 완료 후: `C0: X.X%` / `C1: X.X%` 실제 부하율 표시.
+    *   `cpuStats.update()`를 loop() 1초 블록에서 자동 호출 — `top` 명령어 없이도 지속 갱신.
+
+#### 실측 결과 (2026-04-15 기준)
+*   환경: `ENABLE_ETHERNET` 비활성, WiFi softAP 동작, LVGL UI 활성
+*   `Core 0 Load : 0.6%` — WiFi idle 상태 정상 (트래픽 없으면 낮은 것이 올바른 결과)
+*   `Core 1 Load : 92.8%` — Arduino loop() tight 실행 반영, LVGL 70% 수치와 병행 확인 가능
+*   측정 기준(Baseline): `C0=1019 tps / C1=458 tps`
+
+#### 기술적 한계 (공식 문서화)
+*   Arduino ESP32 2.0.14 SDK 프리컴파일 바이너리에 `uxTaskGetSystemState`가 미포함 (`configUSE_TRACE_FACILITY=0`). ESP-IDF 공식 `real_time_stats` 방식(정확한 ISR 포함 측정)은 SDK 재컴파일 없이는 불가.
+*   WiFi ISR 처리 시간은 idle hook 방식에서 측정 불가. **Core 0이 WiFi 트래픽 없을 때 0%에 가까운 것은 정확한 동작임** (WiFi 태스크는 이벤트 구동 방식으로 대부분의 시간을 sleep 상태로 대기).
+
 ## 2026-04-10
 ### evb-lcd1-p8(8비트 병렬) 하드웨어 핀 이동(IM) 문제 해결
 *   **소프트웨어 핀맵 재정의**: 하드웨어 LCD 패널의 IM을 8비트로 설정할 경우, 컨트롤러의 데이터 수신 포트가 `D0~D7`에서 `D8~D15`로 이동하는 증상(Black Screen)을 식별. 이를 해결하기 위해 `platformio.ini`의 `[lcd1-p8]` 환경에서 논리 핀(`TFT_D0~D7`)을 EVB 보드의 상위 물리 핀(LCD D10~D17 위치)에 직접 매핑하는 소프트웨어 우회 패치 적용.

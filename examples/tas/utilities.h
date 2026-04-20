@@ -90,7 +90,6 @@
 #define LCD_DC_PIN TFT_DC
 #define LCD_CS_PIN TFT_CS
 #define LCD_BL_PIN TFT_BL
-#define ENABLE_LCD
 
 // Ethernet (Dummy for EVB-2)
 #define ETH_MISO_PIN -1
@@ -126,7 +125,6 @@
 #define LCD_DC_PIN 8
 #define LCD_RST_PIN 15
 #define LCD_BL_PIN 16
-#define ENABLE_LCD
 
 #define IR_FILTER_NUM 46
 

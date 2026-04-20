@@ -415,7 +415,6 @@ LGFX tft;
 #else
 TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #endif
-#define ENABLE_LCD
 
 
 static bool lcd_initialized = false;
@@ -614,6 +613,7 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   if (transfer_open) {
     if (tft.dmaBusy()) {
       //delay(1); or yield();
+      yield();
       tft.dmaWait();
     }
     tft.endWrite(); // Resets CS pin HIGH (SPI Sync reset)
@@ -1339,10 +1339,15 @@ void handleShell() {
       }
     }
     else if (cmd.equalsIgnoreCase("top")) {
-      top_running = true;
-      last_top_time = 0; // Start immediately
-      cpuStats.clear();
-      Serial.print("Starting top monitoring...\r\n");
+      if (arg.equalsIgnoreCase("off")) {
+        top_running = false;
+        Serial.println("System monitor: OFF");
+      } else {
+        top_running = true;
+        last_top_time = 0; // Start immediately
+        cpuStats.clear();
+        Serial.println("System monitor: ON (Type 'top off' to stop)");
+      }
     }
 #ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("ifconfig") || cmd.equalsIgnoreCase("ip")) {
@@ -1437,7 +1442,6 @@ void handleShell() {
       Serial.print("----------------------\r\n");
     }
 #endif
-#ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("iperf")) {
       if (arg.equalsIgnoreCase("start")) {
         if (lwiperf_session != NULL) {
@@ -1462,7 +1466,6 @@ void handleShell() {
         Serial.println("Usage: iperf <start|stop>");
       }
     }
-#endif
 #ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("toe_iperf")) {
       if (arg.startsWith("start")) {

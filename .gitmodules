@@ -1,0 +1,4 @@
+[submodule "components/arduino"]
+	path = esp-idf-examples/tas/components/arduino
+	url = https://github.com/espressif/arduino-esp32.git
+	branch = release/v3.0.x

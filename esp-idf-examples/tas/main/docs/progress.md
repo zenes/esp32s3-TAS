@@ -1,5 +1,21 @@
 # 프로젝트 진행 상황
 
+## 2026-04-21: 시스템 안정화 및 하드웨어 최적화 완료
+
+### ✅ 주요 성과
+1. **Watchdog Trigger (WDT) 문제 해결**
+   - 네트워크 이벤트 태스크에서 UI 직접 호출 시 발생하는 Deadlock 현상을 비동기 플래그 방식으로 구조 개선하여 해결.
+2. **SRAM 및 스택 안정성 확보**
+   - Main Task Stack (7KB), Arduino Loop Stack (16KB)으로 2배 확장하여 복합 명령어 수행 시의 스택 오버플로우 방지.
+3. **8MB Octal PSRAM 활성화**
+   - `sdkconfig` 수정을 통해 외부 8MB 메모리를 시스템에 성공적으로 통합 및 malloc 연동 확인.
+4. **실시간 메모리 진단 도구 구현**
+   - `free` 명령어를 통해 SRAM(Static/Used/Free) 및 PSRAM 상태를 계층형으로 출력하는 CLI 기능 추가.
+
+### 💡 현재 상태
+- 모든 하드웨어 리소스(Ethernet, WiFi AP, LCD, PSRAM)가 정상 가동되며, 동시 작업 시에도 워치독 리셋 없이 안정적으로 동작함.
+- `ifconfig`, `status`, `free`, `top` 등 모든 관리 명령어 정상 작동 확인.
+
 > [!IMPORTANT]
 > **공식 작업 프로젝트 정의**: 2026-04-21부로 `esp-idf-examples/tas` 폴더를 본 프로젝트의 **표준 워크스페이스**로 정의합니다. 이전에 사용되던 `examples/tas` 등의 레거시 경로는 모두 정리되었으며, 향후 모든 개발 및 빌드는 현재의 네이티브 ESP-IDF 환경인 `esp-idf-examples/tas`를 기준으로 진행합니다.
 

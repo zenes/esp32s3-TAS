@@ -388,7 +388,7 @@ void installHooks() {
 
 // Command List for Autocomplete
 const char* shell_commands[] = {
-  "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "top", "ifconfig", "arp", "dhcp", "iperf", "udp_iperf", "toe_iperf"
+  "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "top", "ifconfig", "free", "meminfo", "arp", "dhcp", "iperf", "udp_iperf", "toe_iperf"
 };
 
 const int shell_cmd_count = sizeof(shell_commands) / sizeof(shell_commands[0]);
@@ -428,6 +428,9 @@ static lv_obj_t * touch_label;
 static lv_obj_t * touch_line_h;
 static lv_obj_t * touch_line_v;
 #endif
+
+/* Function Prototypes */
+void printMemoryMap();
 
 /* LVGL Touchpad Read Callback */
 void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data) {
@@ -671,6 +674,7 @@ IPAddress dns2(8, 8, 4, 4);
 
 // Network state
 static bool eth_connected = false;
+static volatile bool _pending_ui_update = false;
 static bool ap_started = false;
 
 /**
@@ -1151,7 +1155,7 @@ void handleShell() {
       Serial.print("  ping <host>     - Ping a host (domain or IP)\r\n");
       Serial.print("  top             - Show real-time CPU usage per core (Press Ctrl+C to stop)\r\n");
       Serial.print("  ifconfig        - Show network interface configurations\r\n");
-
+      Serial.print("  free            - Show detailed SRAM/PSRAM memory map\r\n");
       Serial.print("  arp             - Show connected AP clients (MAC/RSSI)\r\n");
 #ifdef ENABLE_ETHERNET
       Serial.print("  dhcp            - Show DHCP server leases (IP/MAC mappings)\r\n");
@@ -1186,6 +1190,12 @@ void handleShell() {
         Serial.print("PSRAM   : Not Found\r\n");
       }
       Serial.print("-----------------------------\r\n\r\n");
+      
+      // Also show the detailed map for completeness
+      printMemoryMap();
+    }
+    else if (cmd.equalsIgnoreCase("free") || cmd.equalsIgnoreCase("meminfo")) {
+      printMemoryMap();
     }
     else if (cmd.equalsIgnoreCase("dmesg")) {
       Serial.print("\n\r--- System Logs (dmesg) ---\r\n");
@@ -1720,11 +1730,46 @@ void NetworkEvent(arduino_event_id_t event) {
   default:
     break;
   }
-  // Update LCD on any major network event
-  updateLCD();
+  // Queue LCD update on any major network event to be handled safely in the main loop
+  _pending_ui_update = true;
+}
+
+void printMemoryMap() {
+    multi_heap_info_t info;
+    heap_caps_get_info(&info, MALLOC_CAP_INTERNAL);
+    size_t total_heap = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+    size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    
+    Serial.println("\n========= SRAM Memory Map (Total 512.0 KB) =========");
+    Serial.printf("[1. Static/System RAM] : %.1f KB (Fixed)\n", (512 * 1024 - (double)total_heap) / 1024.0);
+    Serial.printf("[2. Internal Heap Pool]: %.1f KB (Dynamic)\n", total_heap / 1024.0);
+    Serial.printf("    ├── Used Heap Space: %.1f KB\n", (total_heap - free_heap) / 1024.0);
+    Serial.printf("    └── Free Heap Space: %.1f KB (Available)\n", free_heap / 1024.0);
+    
+    Serial.printf("\n[HEAP Details]\n");
+    Serial.printf("    ├── Min. Ever Free : %.1f KB\n", min_free / 1024.0);
+    Serial.printf("    └── Max. Block Size: %.1f KB\n", info.largest_free_block / 1024.0);
+
+    if (psramFound()) {
+        Serial.println("\n--- PSRAM Status ---");
+        Serial.printf("[PSRAM] Total: %.1f KB\n", ESP.getPsramSize() / 1024.0);
+        Serial.printf("[PSRAM] Free : %.1f KB\n", ESP.getFreePsram() / 1024.0);
+        Serial.printf("[PSRAM] Used : %.1f KB\n", (ESP.getPsramSize() - ESP.getFreePsram()) / 1024.0);
+    }
+    
+    Serial.println("\n--- Task Stack High Water Marks ---");
+    // Show stats for the calling task
+    size_t free_stack = uxTaskGetStackHighWaterMark(NULL);
+    Serial.printf("[TASK] Current Task Stack: %.1f KB Free space\n", free_stack / 1024.0);
+    Serial.println("===================================================\n");
 }
 
 void setup() {
+    Serial.begin(115200);
+    delay(500);
+
+    printMemoryMap();
   Serial.begin(115200);
   delay(1000); // Wait for Serial to stabilize
 
@@ -2080,6 +2125,12 @@ void loop() {
   uint32_t now = millis();
   lv_tick_inc(now - last_tick);
   last_tick = now;
+  // Handle queued UI updates safely in the main task context
+  if (_pending_ui_update) {
+    updateLCD();
+    _pending_ui_update = false;
+  }
+
   lv_timer_handler();
 
   // Update FPS Label every 1 second independently

@@ -1,5 +1,32 @@
 # 프로젝트 진행 상황
 
+> [!IMPORTANT]
+> **공식 작업 프로젝트 정의**: 2026-04-21부로 `esp-idf-examples/tas` 폴더를 본 프로젝트의 **표준 워크스페이스**로 정의합니다. 이전에 사용되던 `examples/tas` 등의 레거시 경로는 모두 정리되었으며, 향후 모든 개발 및 빌드는 현재의 네이티브 ESP-IDF 환경인 `esp-idf-examples/tas`를 기준으로 진행합니다.
+
+## 2026-04-21
+### 이더넷(W5500) 초기화 성공 및 인터넷 공유(NAPT) 시스템 완성
+
+#### 구현 완료 사항
+*   **W5500 이더넷 드라이버 인식 에러 해결**
+    *   **원인 규명**: ESP-IDF 드라이버가 초기화 과정에서 14번 핀(Reset)을 Low로 당겨 칩을 리셋 상태로 고정시킴으로써, MAC 드라이버가 ID 조회 시 `actual 0x0`을 반환하게 되는 타이밍 충돌 이슈 발견.
+    *   **해결 방법**: `phy_config.reset_gpio_num = -1` 설정을 통해 드라이버의 자동 리셋 기능을 차단하고, 수동으로 깨워놓은 칩의 통신 세션을 그대로 이어받도록 구조 변경.
+    *   **성능 확인**: 검증된 20MHz SPI 클럭에서 칩 버전 `0x04`를 정상 인식하고 100Mbps Full Duplex 통신 수립 확인.
+
+*   **인터넷 공유(NAPT) 기능 활성화**
+    *   `sdkconfig` 내 `CONFIG_LWIP_IP_FORWARD` 및 `CONFIG_LWIP_IPV4_NAPT` 옵션 활성화를 통해 이더넷으로 유입된 인터넷을 WiFi AP 클라이언트에 공유하는 Bridge 기능 정상화.
+    *   `[INFO] NAPT enabled - Bridge is active` 상태 확인 완료.
+
+*   **시스템 최적화 및 클린업**
+    *   `ETHClass2.cpp` 내의 임시 진단용 SPI Probe 및 GPIO Dump 로직 제거.
+    *   아카이브된 레거시 파일들(구버전 `progress.md`, `todo.md`, 백업 `sdkconfig` 등)을 전면 삭제하여 개발 환경 정화.
+
+#### 실측 결과
+*   **ETH MAC**: `CE:8D:A2:08:93:51` / **IPv4**: `192.168.0.50`
+*   **NAPT Status**: `Active` (WiFi 기기 인터넷 사용 가능 상태)
+*   **CPU Baseline**: `Core0=749 tps / Core1=1108 tps` (이더넷 부하 반영 시점)
+
+---
+
 ## 2026-04-15
 ### CPU 부하 모니터링 시스템 완성 (UI 통합 + 직렬 모니터 개선)
 

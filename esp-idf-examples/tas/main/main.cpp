@@ -425,9 +425,9 @@ XPT2046_Touchscreen tp(TOUCH_CS, TOUCH_IRQ);
 #endif
 static lv_obj_t * touch_cursor;
 static lv_obj_t * touch_label;
-static lv_obj_t * touch_line_h;
-static lv_obj_t * touch_line_v;
 #endif
+
+// NOTE: Using our custom measurements instead of LVGL's internal ones (to avoid linker issues)
 
 /* Function Prototypes */
 void printMemoryMap();
@@ -518,6 +518,9 @@ static lv_obj_t *ui_debug_panel;
 static lv_obj_t *ui_label_spi;
 static lv_obj_t *ui_label_tgt_fps;
 static lv_obj_t *ui_test_rect;
+
+// Global State
+volatile uint32_t last_render_time_ms = 0;
 static uint32_t frame_cnt = 0;
 static uint32_t fps_val = 0;
 
@@ -577,39 +580,62 @@ void IRAM_ATTR te_isr_handler() {
 #endif
 
 /* Display flushing callback (Asynchronous DMA) */
+#ifdef USE_LOVYANGFX
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
+  if (tft == nullptr) return;
+
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
   static bool transfer_open = false;
 
-#ifdef USE_LOVYANGFX
-  if (tft == nullptr) return;
+  // 프레임 시작 시간 측정 (첫 번째 조각인 경우)
+  static uint64_t frame_start_us = 0;
+  static bool is_first_chunk = true; 
+  if (is_first_chunk) {
+      frame_start_us = esp_timer_get_time();
+      is_first_chunk = false;
+  }
 
-  // 1. Wait for PREVIOUS DMA transfer to finish
+  // 1. Wait for PREVIOUS DMA transfer to finish (Safety)
   if (transfer_open) {
     tft->waitDMA();
     tft->endWrite();
   }
 
+  // 2. Start new transfer session
   tft->startWrite();
   
 #ifdef ENABLE_TE_SYNC
-  // 3. V-Sync(TE) 동기화 복구 (첫 번째 조각 전송 전에만 스캐너 대기)
+  // 3. V-Sync(TE) Sync
   static bool wait_for_te = true;
   if (wait_for_te && te_semaphore != NULL) {
-      xSemaphoreTake(te_semaphore, pdMS_TO_TICKS(100)); // TE 신호 한 사이클 대기
+      xSemaphoreTake(te_semaphore, pdMS_TO_TICKS(100));
   }
-  wait_for_te = lv_disp_flush_is_last(disp); // 마지막 조각을 보낼 때 다음 프레임을 위해 대기 락 설정
+  wait_for_te = lv_disp_flush_is_last(disp);
 #endif
 
   // 4. Start non-blocking DMA transfer
   tft->pushImageDMA(area->x1, area->y1, w, h, (uint16_t *)&color_p->full);
-  
   transfer_open = true;
-  frame_cnt++;
+
+  // 프레임 완료 처리 (마지막 조각인 경우)
+  if (lv_disp_flush_is_last(disp)) {
+      tft->waitDMA(); // 하드웨어 전송이 완전히 끝날 때까지 대기하여 정확한 Flush 시간 측정
+      uint64_t frame_end_us = esp_timer_get_time();
+      last_render_time_ms = (frame_end_us - frame_start_us) / 1000;
+      is_first_chunk = true; // 다음 프레임을 위해 플래그 리셋
+      frame_cnt++;
+  }
+  
   lv_disp_flush_ready(disp);
+}
 #else
+void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   if (tft == nullptr) return;
+
+  uint32_t w = (area->x2 - area->x1 + 1);
+  uint32_t h = (area->y2 - area->y1 + 1);
+  static bool transfer_open = false;
 
   // 1. Wait for PREVIOUS DMA transfer to finish, then close the SPI transaction
   if (transfer_open) {
@@ -642,17 +668,15 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   
   frame_cnt++;
   lv_disp_flush_ready(disp); // Tell LVGL we are ready for the NEXT frame buffer
-#endif
 }
+#endif
 
-volatile uint32_t last_render_time_ms = 0;
-
-// LVGL 모니터링 콜백 (렌더링 소요 시간 직관적 측정용)
+// LVGL 모니터링 콜백 (렌더링 소요 시간 측정 - LVGL 내장 타이머 사용)
 void my_monitor_cb(lv_disp_drv_t * disp_drv, uint32_t time, uint32_t px) {
-  // 화면 갱신 시 소요된 렌더링 시간을 저장
-  if (time > 0) {
-    last_render_time_ms = time;
-  }
+    // 화면 갱신 시 소요된 렌더링 시간을 저장
+    if (time > 0) {
+        last_render_time_ms = time;
+    }
 }
 
 // Network state
@@ -793,6 +817,7 @@ void initLVGLUI() {
   lv_obj_set_style_border_color(ui_debug_panel, lv_color_make(70, 70, 70), 0);
   lv_obj_set_style_pad_all(ui_debug_panel, 8, 0);
   
+  lv_obj_add_flag(ui_debug_panel, LV_OBJ_FLAG_HIDDEN); // 패널 전체 숨김
   // 패널 내부를 Flex(세로 정렬) 레이아웃으로 설정
   lv_obj_set_layout(ui_debug_panel, LV_LAYOUT_FLEX);
   lv_obj_set_flex_flow(ui_debug_panel, LV_FLEX_FLOW_COLUMN);
@@ -806,11 +831,13 @@ void initLVGLUI() {
   lv_obj_set_style_text_color(debug_title, lv_palette_main(LV_PALETTE_LIGHT_BLUE), 0);
   lv_obj_add_flag(debug_title, LV_OBJ_FLAG_HIDDEN); // 숨김
 
-  /* FPS Label */
-  ui_label_fps = lv_label_create(ui_debug_panel);
+  /* FPS Label - Move to outer screen bottom-right (HIDDEN by default) */
+  ui_label_fps = lv_label_create(scr);
   lv_obj_set_style_text_font(ui_label_fps, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(ui_label_fps, lv_color_white(), 0);
-  lv_label_set_text(ui_label_fps, "FPS: 0");
+  lv_obj_set_style_text_color(ui_label_fps, lv_palette_main(LV_PALETTE_LIME), 0);
+  lv_obj_align(ui_label_fps, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+  lv_label_set_text(ui_label_fps, "FPS: 0  --ms");
+  lv_obj_add_flag(ui_label_fps, LV_OBJ_FLAG_HIDDEN); // 숨김 처리
 
   /* Target FPS Label */
   ui_label_tgt_fps = lv_label_create(ui_debug_panel);
@@ -924,9 +951,24 @@ void initLVGLUI() {
     // CENTER align 제거: set_pos()가 오프셋이 아닌 절대좌표로 동작하도록
     lv_obj_set_pos(ui_test_rect, (320 - 25) / 2, (240 - 25) / 2); // 화면 중앙
     lv_timer_create(move_test_rect_cb, 16, NULL);
-
   }
 #endif
+
+  /* Color Verification Boxes (R, G, B) - Left Aligned */
+  lv_obj_t *red_box = lv_obj_create(scr);
+  lv_obj_set_size(red_box, 30, 30);
+  lv_obj_set_style_bg_color(red_box, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_align(red_box, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+
+  lv_obj_t *green_box = lv_obj_create(scr);
+  lv_obj_set_size(green_box, 30, 30);
+  lv_obj_set_style_bg_color(green_box, lv_palette_main(LV_PALETTE_GREEN), 0);
+  lv_obj_align(green_box, LV_ALIGN_BOTTOM_LEFT, 45, -10);
+
+  lv_obj_t *blue_box = lv_obj_create(scr);
+  lv_obj_set_size(blue_box, 30, 30);
+  lv_obj_set_style_bg_color(blue_box, lv_palette_main(LV_PALETTE_BLUE), 0);
+  lv_obj_align(blue_box, LV_ALIGN_BOTTOM_LEFT, 80, -10);
 }
 
 /**
@@ -1347,17 +1389,7 @@ void handleShell() {
         Serial.print("Usage: ping <host>\r\n");
       }
     }
-    else if (cmd.equalsIgnoreCase("top")) {
-      if (arg.equalsIgnoreCase("off")) {
-        top_running = false;
-        Serial.println("System monitor: OFF");
-      } else {
-        top_running = true;
-        last_top_time = 0; // Start immediately
-        cpuStats.clear();
-        Serial.println("System monitor: ON (Type 'top off' to stop)");
-      }
-    }
+
 #ifdef ENABLE_ETHERNET
     else if (cmd.equalsIgnoreCase("ifconfig") || cmd.equalsIgnoreCase("ip")) {
       Serial.print("\r\n--- Interface Configuration ---\r\n");
@@ -1649,6 +1681,16 @@ void handleShell() {
       }
     }
 #endif
+    else if (cmd.equalsIgnoreCase("top")) {
+      if (top_running) {
+        top_running = false;
+        Serial.println("[System] Monitor stopped.");
+      } else {
+        top_running = true;
+        last_top_time = 0; // trigger immediate first print
+        Serial.println("[System] Real-time Monitor Started. Press Ctrl+C to exit.");
+      }
+    }
     else {
       Serial.printf("Unknown command: %s. Type 'help' for list.\r\n", cmd.c_str());
     }
@@ -1886,6 +1928,7 @@ void setup() {
 #endif
 
     tft->init();
+    tft->setSwapBytes(false); // LVGL handles swapping now (Efficiency)
     tft->setRotation(1); // Landscape (Move forward to ensure correct windowing)
 
 #ifdef USE_LOVYANGFX
@@ -1938,7 +1981,7 @@ void setup() {
     disp_drv.draw_buf = &draw_buf; // CRITICAL: This was missing!
     
     // 부분 업데이트 모드로 복구하여 프레임레이트 복구 및 노이즈 방지
-    disp_drv.full_refresh = 0; 
+    disp_drv.full_refresh = 1; 
 
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     
@@ -2112,33 +2155,67 @@ void loop() {
     }
   }
 
-  // Real-time Top Monitoring
+  // Real-time Top Monitoring (Non-blocking - runs inside main loop)
   if (top_running) {
-    if (currentMillis - last_top_time >= 1000) {
+    // Check for Ctrl+C to stop
+    if (Serial.available()) {
+      char c = Serial.peek();
+      if (c == 0x03) { // Ctrl+C
+        Serial.read(); // consume it
+        top_running = false;
+        Serial.println("\r\n[System] Monitor stopped.");
+        Serial.print("> ");
+      }
+    }
+    
+    if (top_running && (currentMillis - last_top_time >= 1000)) {
       last_top_time = currentMillis;
-      cpuStats.showTop();
+      
+      // ANSI: Clear Screen and Home Cursor
+      Serial.print("\033[2J\033[H");
+      Serial.println("======================================================");
+      Serial.printf(" ESP32-S3 SYSTEM MONITOR | Uptime: %lu s\n", millis() / 1000);
+      Serial.println("------------------------------------------------------");
+      
+      // CPU Load
+      cpuStats.update();
+      Serial.printf(" Core 0 Load (Net/Sys): %5.1f %%\n", cpuStats.getLoad(0));
+      Serial.printf(" Core 1 Load (UI/App) : %5.1f %%\n", cpuStats.getLoad(1));
+      Serial.println("------------------------------------------------------");
+      
+      // Performance Metrics (Measured)
+      Serial.printf(" [Performance Metrics]\n");
+      Serial.printf("   - Refresh Rate (FPS) : %u\n", fps_val);
+      Serial.printf("   - Frame Flush Time   : %u ms\n", last_render_time_ms);
+      Serial.println("------------------------------------------------------");
+      
+      // Memory Info
+      Serial.printf(" Free Heap : %7u KB\n", ESP.getFreeHeap() / 1024);
+      if (psramFound()) {
+          Serial.printf(" Free PSRAM: %7u KB / %u KB\n", ESP.getFreePsram() / 1024, ESP.getPsramSize() / 1024);
+      }
+      Serial.printf(" Task Count: %d\n", (int)uxTaskGetNumberOfTasks());
+      Serial.printf(" CPU Temp  : %.1f C\n", (float)temperatureRead());
+      Serial.println("======================================================");
+      Serial.println(" [Press Ctrl+C to stop]");
     }
   }
 
   // Update LVGL tick and timer handler
   static uint32_t last_tick = 0;
-  uint32_t now = millis();
-  lv_tick_inc(now - last_tick);
-  last_tick = now;
-  // Handle queued UI updates safely in the main task context
-  if (_pending_ui_update) {
-    updateLCD();
-    _pending_ui_update = false;
-  }
+  uint32_t now_tick = millis();
+  lv_tick_inc(now_tick - last_tick);
+  last_tick = now_tick;
 
+  // Update LVGL timer handler
   lv_timer_handler();
 
   // Update FPS Label every 1 second independently
   static uint32_t last_fps_millis = 0;
   if (millis() - last_fps_millis >= 1000) {
     if (lcd_initialized && ui_label_fps) {
-        fps_val = 60; // Use LVGL internal average FPS
-        char buf_fps[32]; // 크기 늘림
+        fps_val = lv_refr_get_fps_avg(); // Use LVGL internal average FPS
+        char buf_fps[32];
         snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %ums", fps_val, last_render_time_ms);
         lv_label_set_text(ui_label_fps, buf_fps);
     }

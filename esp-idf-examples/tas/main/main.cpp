@@ -2343,6 +2343,15 @@ void loop() {
       Serial.printf("   ├─ Pure Render: %5.2f ms  [CPU]\n", (float)last_pure_render_time_us / 1000.0f);
       Serial.printf("   ├─ Pure Flush : %5.2f ms  [BUS] (%u chunks, %u ms total)\n", 
                     (float)avg_chunk_flush_us / 1000.0f, num_chunks, last_flush_time_us / 1000);
+      Serial.println("------------------------------------------------------");
+      
+      // Memory Info
+      Serial.printf(" Free Heap : %7u KB\n", ESP.getFreeHeap() / 1024);
+      if (psramFound()) {
+          Serial.printf(" Free PSRAM: %7u KB / %u KB\n", ESP.getFreePsram() / 1024, ESP.getPsramSize() / 1024);
+      }
+      Serial.printf(" Task Count: %d\n", (int)uxTaskGetNumberOfTasks());
+      Serial.printf(" CPU Temp  : %.1f C\n", (float)temperatureRead());
       Serial.println("======================================================");
       Serial.println(" [Press Ctrl+C to stop]");
     }

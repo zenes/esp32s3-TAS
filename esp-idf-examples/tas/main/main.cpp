@@ -520,37 +520,98 @@ static lv_obj_t *ui_label_tgt_fps;
 static lv_obj_t *ui_test_rect;
 
 // Global State
+volatile uint32_t last_flush_time_us = 0;
 volatile uint32_t last_render_time_ms = 0;
-static uint32_t frame_cnt = 0;
+static volatile uint32_t frame_cnt = 0;
 static uint32_t fps_val = 0;
 
-#ifdef ENABLE_GRADIENT_BG
+#if defined(ENABLE_GRADIENT_BG) || defined(ENABLE_TEST_BALL)
 /* Timer callback for Full Screen UI changes (Gradient/Color shift logic) */
 void move_test_rect_cb(lv_timer_t * t) {
+#ifdef ENABLE_GRADIENT_BG
   static uint8_t c = 0;
   c += 2;
   lv_obj_t *scr = lv_scr_act();
-  if (!scr) return;
-  lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
-  lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
-  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
+  if (scr) {
+    lv_obj_set_style_bg_color(scr, lv_color_make(c, 100, 200), 0);
+    lv_obj_set_style_bg_grad_color(scr, lv_color_make(200 - c, 50, 150), 0);
+    lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
+  }
+#endif
 
+#ifdef ENABLE_TEST_BALL
   if (ui_test_rect) {
       // 화면 크기: landscape 320x240 고정
-      // (TFT_WIDTH=240, TFT_HEIGHT=320은 세로 기준 빌드플래그 — 실제 LVGL 화면과 반대)
       static const int BALL_SIZE = 25;
       static const int SCR_W = 320;
       static const int SCR_H = 240;
-      static int x_pos = (SCR_W - BALL_SIZE) / 2;  // 147
-      static int y_pos = (SCR_H - BALL_SIZE) / 2;  // 107
-      static int x_dir = 2, y_dir = 2;
+      static float x_pos = (SCR_W - BALL_SIZE) / 2.0f;
+      static float y_pos = (SCR_H - BALL_SIZE) / 2.0f;
+      static int x_dir = 1, y_dir = 1; // 방향 부호만 관리
 
-      if (x_pos <= 0 || x_pos >= SCR_W - BALL_SIZE) x_dir *= -1;
-      if (y_pos <= 0 || y_pos >= SCR_H - BALL_SIZE) y_dir *= -1;
-      x_pos += x_dir;
-      y_pos += y_dir;
-      lv_obj_set_pos(ui_test_rect, x_pos, y_pos);
+#ifdef ENABLE_DELTATIME_ANIM
+      // 시간 기반 이동 (Delta-Time)
+      static uint32_t last_move_ms = 0;
+      uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+      
+      // 첫 호출 시 초기화
+      if (last_move_ms == 0) last_move_ms = now_ms;
+      
+      uint32_t dt_ms = now_ms - last_move_ms;
+      last_move_ms = now_ms;
+
+      // 비정상적으로 긴 dt 방어 (예: 100ms 초과 시 16ms로 간주)
+      if (dt_ms > 100) dt_ms = 16;
+
+      // 목표 속도: 프레임당 2px 이동 기준 (현재 설정된 Target FPS에 비례)
+      // 예: 60 FPS -> 120 px/sec, 30 FPS -> 60 px/sec
+      static const float TARGET_FPS = 1000.0f / LV_DISP_DEF_REFR_PERIOD;
+      static const float SPEED_PX_PER_SEC = 2.0f * TARGET_FPS;
+      float move_step = (SPEED_PX_PER_SEC * dt_ms) / 1000.0f;
+
+      // 경계 충돌 검사 및 위치 보정 (벽 끼임 방지)
+      if (x_pos <= 0) {
+          x_pos = 0;
+          x_dir = 1;
+      } else if (x_pos >= (float)(SCR_W - BALL_SIZE)) {
+          x_pos = (float)(SCR_W - BALL_SIZE);
+          x_dir = -1;
+      }
+
+      if (y_pos <= 0) {
+          y_pos = 0;
+          y_dir = 1;
+      } else if (y_pos >= (float)(SCR_H - BALL_SIZE)) {
+          y_pos = (float)(SCR_H - BALL_SIZE);
+          y_dir = -1;
+      }
+
+      x_pos += move_step * (float)x_dir;
+      y_pos += move_step * (float)y_dir;
+#else
+      // 기존 방식: 프레임당 고정 2px 이동 (보정 포함)
+      static const int MOVE_STEP = 2;
+      if (x_pos <= 0) {
+          x_pos = 0;
+          x_dir = 1;
+      } else if (x_pos >= (float)(SCR_W - BALL_SIZE)) {
+          x_pos = (float)(SCR_W - BALL_SIZE);
+          x_dir = -1;
+      }
+
+      if (y_pos <= 0) {
+          y_pos = 0;
+          y_dir = 1;
+      } else if (y_pos >= (float)(SCR_H - BALL_SIZE)) {
+          y_pos = (float)(SCR_H - BALL_SIZE);
+          y_dir = -1;
+      }
+      x_pos += (float)MOVE_STEP * (float)x_dir;
+      y_pos += (float)MOVE_STEP * (float)y_dir;
+#endif
+      lv_obj_set_pos(ui_test_rect, (int)x_pos, (int)y_pos);
   }
+#endif
 }
 #endif
 
@@ -622,7 +683,7 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   if (lv_disp_flush_is_last(disp)) {
       tft->waitDMA(); // 하드웨어 전송이 완전히 끝날 때까지 대기하여 정확한 Flush 시간 측정
       uint64_t frame_end_us = esp_timer_get_time();
-      last_render_time_ms = (frame_end_us - frame_start_us) / 1000;
+      last_flush_time_us = (uint32_t)(frame_end_us - frame_start_us);
       is_first_chunk = true; // 다음 프레임을 위해 플래그 리셋
       frame_cnt++;
   }
@@ -939,7 +1000,7 @@ void initLVGLUI() {
   lv_label_set_text(ui_label_clients, "Clients: 0");
   lv_obj_set_style_text_color(ui_label_clients, lv_palette_main(LV_PALETTE_GREY), 0);
 
-#ifdef ENABLE_GRADIENT_BG
+#ifdef ENABLE_TEST_BALL
   /* 노란 사각형 공 — 단순 rect (LV_RADIUS_CIRCLE 제거로 DMA hang 방지) */
   ui_test_rect = lv_obj_create(scr);
   if (ui_test_rect) {
@@ -952,6 +1013,9 @@ void initLVGLUI() {
     lv_obj_set_pos(ui_test_rect, (320 - 25) / 2, (240 - 25) / 2); // 화면 중앙
     lv_timer_create(move_test_rect_cb, 16, NULL);
   }
+#elif defined(ENABLE_GRADIENT_BG)
+  // 공은 없지만 그라데이션만 활성화된 경우 타이머 생성
+  lv_timer_create(move_test_rect_cb, 16, NULL);
 #endif
 
   /* Color Verification Boxes (R, G, B) - Left Aligned */
@@ -975,7 +1039,7 @@ void initLVGLUI() {
  * @brief Update LCD with current network status (LVGL version)
  */
 void updateLCD() {
-#ifdef ENABLE_LCD
+#if ENABLE_LCD
   if (!lcd_initialized) {
     return;
   }
@@ -1196,6 +1260,7 @@ void handleShell() {
 #endif
       Serial.print("  ping <host>     - Ping a host (domain or IP)\r\n");
       Serial.print("  top             - Show real-time CPU usage per core (Press Ctrl+C to stop)\r\n");
+      Serial.print("  ps              - Show all tasks: name, state, priority, stack, core\r\n");
       Serial.print("  ifconfig        - Show network interface configurations\r\n");
       Serial.print("  free            - Show detailed SRAM/PSRAM memory map\r\n");
       Serial.print("  arp             - Show connected AP clients (MAC/RSSI)\r\n");
@@ -1691,6 +1756,48 @@ void handleShell() {
         Serial.println("[System] Real-time Monitor Started. Press Ctrl+C to exit.");
       }
     }
+    else if (cmd.equalsIgnoreCase("ps")) {
+      // One-shot snapshot: no background polling, zero ongoing overhead
+      UBaseType_t taskCount = uxTaskGetNumberOfTasks();
+      TaskStatus_t *taskList = (TaskStatus_t *)malloc(taskCount * sizeof(TaskStatus_t));
+      if (taskList) {
+        UBaseType_t actual = uxTaskGetSystemState(taskList, taskCount, NULL);
+        Serial.print("\r\n--- Task Snapshot ---\r\n");
+        Serial.printf(" %-3s %-16s %-6s %3s  %-10s  %s\r\n",
+                      "#", "NAME", "STATE", "PRI", "STACK_FREE", "CORE");
+        Serial.print("----------------------------------------------\r\n");
+        for (UBaseType_t i = 0; i < actual; i++) {
+          const char *state;
+          switch (taskList[i].eCurrentState) {
+            case eRunning:   state = "Run  "; break;
+            case eReady:     state = "Ready"; break;
+            case eBlocked:   state = "Block"; break;
+            case eSuspended: state = "Susp "; break;
+            case eDeleted:   state = "Del  "; break;
+            default:         state = "?    "; break;
+          }
+          char coreStr[5];
+          BaseType_t coreId = taskList[i].xCoreID;
+          if ((uint32_t)coreId == (uint32_t)tskNO_AFFINITY) {
+            snprintf(coreStr, sizeof(coreStr), "Any");
+          } else {
+            snprintf(coreStr, sizeof(coreStr), "%d", (int)coreId);
+          }
+          Serial.printf(" %-3u %-16s %s  %3u  %-10u  %s\r\n",
+            (unsigned)taskList[i].xTaskNumber,
+            taskList[i].pcTaskName,
+            state,
+            (unsigned)taskList[i].uxCurrentPriority,
+            (unsigned)taskList[i].usStackHighWaterMark,
+            coreStr);
+        }
+        Serial.printf("----------------------------------------------\r\n");
+        Serial.printf("Total: %u tasks\r\n\r\n", (unsigned)actual);
+        free(taskList);
+      } else {
+        Serial.println("[ERROR] ps: malloc failed.\r\n");
+      }
+    }
     else {
       Serial.printf("Unknown command: %s. Type 'help' for list.\r\n", cmd.c_str());
     }
@@ -1808,6 +1915,9 @@ void printMemoryMap() {
 }
 
 void setup() {
+    // UI/App 태스크 우선순위 조정 (이벤트 태스크 19보다 낮은 18로 설정하여 네트워크 안정성 확보)
+    vTaskPrioritySet(NULL, 18);
+
     Serial.begin(115200);
     delay(500);
 
@@ -1842,6 +1952,21 @@ void setup() {
   logMsg(LOG_INFO, "Step 1: Starting WiFi AP (softAP)... %s", 
     WiFi.softAP(ap_ssid_custom.c_str(), ap_pw_custom.c_str(), AP_CHANNEL, 0, AP_MAX_CONN) ? "Success" : "FAILED");
 
+    // WiFi 전력 절약 모드 해제 (지연 시간 최적화)
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    // [최적화] TCP/IP 스택(tiT) 태스크 우선순위 강제 상향 (기본 18 -> 24)
+    TaskHandle_t tiT_handle = xTaskGetHandle("tiT");
+    if (tiT_handle != NULL) {
+        vTaskPrioritySet(tiT_handle, 24);
+        logMsg(LOG_INFO, "Priority of 'tiT' task set to 24 successfully.");
+    } else {
+        logMsg(LOG_WARN, "Could not find 'tiT' task handle.");
+    }
+
+    logMsg(LOG_INFO, "WiFi AP Setup: SSID=%s, CH=%d, MAX_CONN=%d", 
+         ap_ssid_custom.c_str(), AP_CHANNEL, AP_MAX_CONN);
+
   esp_err_t err = esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT40);
   logMsg(LOG_INFO, "Step 2: Setting WiFi Bandwidth to HT40... %s", (err == ESP_OK) ? "Success" : "FAILED");
 
@@ -1858,7 +1983,7 @@ void setup() {
   Serial.println("       Internet access will be available after Ethernet connection.\n");
 
   // Step 5: Initialize LCD (Dynamically detected)
-#ifdef ENABLE_LCD
+#if ENABLE_LCD
     // Dynamic Allocation to prevent static initialization order issues
 #ifdef USE_LOVYANGFX
     tft = new LGFX();
@@ -1981,7 +2106,11 @@ void setup() {
     disp_drv.draw_buf = &draw_buf; // CRITICAL: This was missing!
     
     // 부분 업데이트 모드로 복구하여 프레임레이트 복구 및 노이즈 방지
+#ifdef ENABLE_FULL_REFRESH
     disp_drv.full_refresh = 1; 
+#else
+    disp_drv.full_refresh = 0; 
+#endif
 
     lv_disp_t * disp_obj = lv_disp_drv_register(&disp_drv);
     
@@ -2186,7 +2315,11 @@ void loop() {
       // Performance Metrics (Measured)
       Serial.printf(" [Performance Metrics]\n");
       Serial.printf("   - Refresh Rate (FPS) : %u\n", fps_val);
-      Serial.printf("   - Frame Flush Time   : %u ms\n", last_render_time_ms);
+      if (last_flush_time_us < 1000) {
+        Serial.printf("   - Frame Flush Time   : %u us\n", last_flush_time_us);
+      } else {
+        Serial.printf("   - Frame Flush Time   : %.2f ms\n", (float)last_flush_time_us / 1000.0f);
+      }
       Serial.println("------------------------------------------------------");
       
       // Memory Info
@@ -2212,11 +2345,20 @@ void loop() {
 
   // Update FPS Label every 1 second independently
   static uint32_t last_fps_millis = 0;
+  static uint32_t last_frame_cnt = 0;
   if (millis() - last_fps_millis >= 1000) {
     if (lcd_initialized && ui_label_fps) {
-        fps_val = lv_refr_get_fps_avg(); // Use LVGL internal average FPS
+        // 실제 flush 횟수 기반 정확한 FPS 계산
+        uint32_t current_frame_cnt = frame_cnt;
+        fps_val = current_frame_cnt - last_frame_cnt;
+        last_frame_cnt = current_frame_cnt;
+
         char buf_fps[32];
-        snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %ums", fps_val, last_render_time_ms);
+        if (last_flush_time_us < 1000) {
+          snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %uus", fps_val, last_flush_time_us);
+        } else {
+          snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %.1fms", fps_val, (float)last_flush_time_us / 1000.0f);
+        }
         lv_label_set_text(ui_label_fps, buf_fps);
     }
 

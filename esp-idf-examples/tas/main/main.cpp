@@ -521,7 +521,11 @@ static lv_obj_t *ui_test_rect;
 
 // Global State
 volatile uint32_t last_flush_time_us = 0;
+volatile uint32_t last_pure_render_time_us = 0;
 volatile uint32_t last_render_time_ms = 0;
+static uint64_t refresh_trigger_us = 0;
+static uint64_t last_flush_end_us = 0;
+static uint32_t accumulated_render_us = 0;
 static volatile uint32_t frame_cnt = 0;
 static uint32_t fps_val = 0;
 
@@ -650,11 +654,17 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   static bool transfer_open = false;
 
   // 프레임 시작 시간 측정 (첫 번째 조각인 경우)
+  uint64_t now_us = esp_timer_get_time();
   static uint64_t frame_start_us = 0;
   static bool is_first_chunk = true; 
   if (is_first_chunk) {
-      frame_start_us = esp_timer_get_time();
+      frame_start_us = now_us;
       is_first_chunk = false;
+      // 첫 조각의 렌더링 시간 = 루프 시작(lv_timer_handler 직전)부터 첫 flush 호출까지
+      accumulated_render_us = (uint32_t)(now_us - refresh_trigger_us);
+  } else {
+      // 후속 조각의 렌더링 시간 = 이전 조각 전송 완료부터 현재 flush 호출까지
+      accumulated_render_us += (uint32_t)(now_us - last_flush_end_us);
   }
 
   // 1. Wait for PREVIOUS DMA transfer to finish (Safety)
@@ -684,10 +694,12 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
       tft->waitDMA(); // 하드웨어 전송이 완전히 끝날 때까지 대기하여 정확한 Flush 시간 측정
       uint64_t frame_end_us = esp_timer_get_time();
       last_flush_time_us = (uint32_t)(frame_end_us - frame_start_us);
+      last_pure_render_time_us = accumulated_render_us;
       is_first_chunk = true; // 다음 프레임을 위해 플래그 리셋
       frame_cnt++;
   }
   
+  last_flush_end_us = esp_timer_get_time();
   lv_disp_flush_ready(disp);
 }
 #else
@@ -2312,23 +2324,25 @@ void loop() {
       Serial.printf(" Core 1 Load (UI/App) : %5.1f %%\n", cpuStats.getLoad(1));
       Serial.println("------------------------------------------------------");
       
-      // Performance Metrics (Measured)
-      Serial.printf(" [Performance Metrics]\n");
-      Serial.printf("   - Refresh Rate (FPS) : %u\n", fps_val);
-      if (last_flush_time_us < 1000) {
-        Serial.printf("   - Frame Flush Time   : %u us\n", last_flush_time_us);
-      } else {
-        Serial.printf("   - Frame Flush Time   : %.2f ms\n", (float)last_flush_time_us / 1000.0f);
-      }
-      Serial.println("------------------------------------------------------");
+      // Frame Timing Analysis (Summation)
+      uint32_t current_fps = (fps_val > 0) ? fps_val : 60;
+      uint32_t total_cycle_us = 1000000 / current_fps;
       
-      // Memory Info
-      Serial.printf(" Free Heap : %7u KB\n", ESP.getFreeHeap() / 1024);
-      if (psramFound()) {
-          Serial.printf(" Free PSRAM: %7u KB / %u KB\n", ESP.getFreePsram() / 1024, ESP.getPsramSize() / 1024);
-      }
-      Serial.printf(" Task Count: %d\n", (int)uxTaskGetNumberOfTasks());
-      Serial.printf(" CPU Temp  : %.1f C\n", (float)temperatureRead());
+      // 조각 개수 계산 (예: 240 / 64 = 3.75 -> 4조각)
+      uint32_t num_chunks = (240 + 64 - 1) / 64; 
+      uint32_t avg_chunk_flush_us = last_flush_time_us / num_chunks;
+      uint32_t first_chunk_render_us = last_pure_render_time_us / num_chunks;
+      uint32_t active_time_us = first_chunk_render_us + last_flush_time_us;
+      int32_t idle_us = (int32_t)total_cycle_us - (int32_t)active_time_us;
+      if (idle_us < 0) idle_us = 0;
+
+      Serial.printf(" [Frame Time Analysis]\n");
+      Serial.printf("   Total Cycle  : %5.2f ms (%u FPS) | Active: %5.2f ms | Idle: %5.2f ms\n", 
+                    (float)total_cycle_us / 1000.0f, current_fps, (float)active_time_us / 1000.0f, (float)idle_us / 1000.0f);
+      Serial.printf("   \n");
+      Serial.printf("   ├─ Pure Render: %5.2f ms  [CPU]\n", (float)last_pure_render_time_us / 1000.0f);
+      Serial.printf("   ├─ Pure Flush : %5.2f ms  [BUS] (%u chunks, %u ms total)\n", 
+                    (float)avg_chunk_flush_us / 1000.0f, num_chunks, last_flush_time_us / 1000);
       Serial.println("======================================================");
       Serial.println(" [Press Ctrl+C to stop]");
     }
@@ -2341,6 +2355,7 @@ void loop() {
   last_tick = now_tick;
 
   // Update LVGL timer handler
+  refresh_trigger_us = esp_timer_get_time();
   lv_timer_handler();
 
   // Update FPS Label every 1 second independently
@@ -2355,9 +2370,9 @@ void loop() {
 
         char buf_fps[32];
         if (last_flush_time_us < 1000) {
-          snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %uus", fps_val, last_flush_time_us);
+          snprintf(buf_fps, sizeof(buf_fps), "FPS:%u F:%uus R:%uus", fps_val, last_flush_time_us, last_pure_render_time_us);
         } else {
-          snprintf(buf_fps, sizeof(buf_fps), "FPS:%u  %.1fms", fps_val, (float)last_flush_time_us / 1000.0f);
+          snprintf(buf_fps, sizeof(buf_fps), "FPS:%u F:%.1fms R:%.1fms", fps_val, (float)last_flush_time_us / 1000.0f, (float)last_pure_render_time_us / 1000.0f);
         }
         lv_label_set_text(ui_label_fps, buf_fps);
     }

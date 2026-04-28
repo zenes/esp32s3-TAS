@@ -1869,17 +1869,12 @@ void NetworkEvent(arduino_event_id_t event) {
            ETH.fullDuplex() ? "FULL_DUPLEX" : "HALF_DUPLEX", ETH.linkSpeed());
     eth_connected = true;
 
-    // [Optimization] 인터넷 공유가 아닌 양방향 통신 최적화를 위해 NAPT 대신 라우팅 모드 사용
-    logMsg(LOG_INFO, "L3 Routing Mode active (No NAT)");
-    /*
-    #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    // [Optimization] WiFi AP 장치들이 이더넷을 통해 인터넷 및 외부 장치(라즈베리파이 등)와 통신 가능하도록 NAPT 활성화
     if (WiFi.AP.enableNAPT(true)) {
-      logMsg(LOG_INFO, "NAPT enabled - Bridge is active");
+      logMsg(LOG_INFO, "NAPT enabled - Internet sharing active");
     } else {
       logMsg(LOG_ERROR, "NAPT enable failed!");
     }
-    #endif
-    */
     break;
 
   case ARDUINO_EVENT_ETH_DISCONNECTED:
@@ -1953,8 +1948,10 @@ void printMemoryMap() {
 }
 
 void setup() {
+#ifdef ENABLE_TASK_PRIORITY_TUNING
     // UI/App 태스크 우선순위 조정 (이벤트 태스크 19보다 낮은 18로 설정하여 네트워크 안정성 확보)
     vTaskPrioritySet(NULL, 18);
+#endif
 
     Serial.begin(115200);
     delay(500);
@@ -1969,6 +1966,26 @@ void setup() {
   Serial.println("===== tas Bridge Example =====");
   Serial.println("Ethernet to WiFi AP Bridge using NAPT");
   Serial.println("=====================================\n");
+
+  // 현재 적용된 네트워크 최적화 상태 출력
+#ifdef CONFIG_LWIP_TCP_WND_DEFAULT
+  Serial.printf("[Config] TCP Window Size: %d Bytes\n", CONFIG_LWIP_TCP_WND_DEFAULT);
+#else
+  Serial.println("[Config] TCP Window Size: Default (Unknown)");
+#endif
+
+#ifdef CONFIG_LWIP_IRAM_OPTIMIZATION
+  Serial.println("[Config] lwIP IRAM Optimization: ENABLED");
+#else
+  Serial.println("[Config] lwIP IRAM Optimization: DISABLED");
+#endif
+
+#ifdef CONFIG_ESP32_WIFI_IRAM_OPT
+  Serial.println("[Config] WiFi IRAM Optimization: ENABLED");
+#else
+  Serial.println("[Config] WiFi IRAM Optimization: DISABLED");
+#endif
+  
   Serial.print("> "); // Initial prompt
 
   // Step 0: Load saved settings from NVS
@@ -1993,6 +2010,7 @@ void setup() {
     // WiFi 전력 절약 모드 해제 (지연 시간 최적화)
     esp_wifi_set_ps(WIFI_PS_NONE);
 
+#ifdef ENABLE_TASK_PRIORITY_TUNING
     // [최적화] TCP/IP 스택(tiT) 태스크 우선순위 강제 상향 (기본 18 -> 24)
     TaskHandle_t tiT_handle = xTaskGetHandle("tiT");
     if (tiT_handle != NULL) {
@@ -2001,6 +2019,7 @@ void setup() {
     } else {
         logMsg(LOG_WARN, "Could not find 'tiT' task handle.");
     }
+#endif
 
     logMsg(LOG_INFO, "WiFi AP Setup: SSID=%s, CH=%d, MAX_CONN=%d", 
          ap_ssid_custom.c_str(), AP_CHANNEL, AP_MAX_CONN);

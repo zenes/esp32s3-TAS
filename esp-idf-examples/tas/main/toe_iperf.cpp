@@ -78,6 +78,12 @@ static void toe_iperf_server_task(void* pvParameters) {
                 w5500_read_data(socket, rx_buffer, read_len);
                 total_bytes += read_len;
                 
+                static uint32_t last_yield_time = 0;
+                if (millis() - last_yield_time > 1000) {
+                    vTaskDelay(1); // Feed the watchdog / let IDLE task run
+                    last_yield_time = millis();
+                }
+                
                 // For UDP, we reset the timer continuously until traffic stops for a bit
                 if(cfg->is_udp) {
                      if (total_bytes == read_len) {
@@ -233,6 +239,12 @@ static void toe_iperf_client_task(void* pvParameters) {
             uint16_t send_len = (free_len > 4096) ? 4096 : free_len;
             w5500_write_data(socket, tx_buffer, send_len);
             total_bytes += send_len;
+            
+            static uint32_t last_yield_time = 0;
+            if (millis() - last_yield_time > 1000) {
+                vTaskDelay(1); // Feed the watchdog / let IDLE task run
+                last_yield_time = millis();
+            }
         } else {
             vTaskDelay(1);
         }

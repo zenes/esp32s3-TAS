@@ -386,6 +386,20 @@ void installHooks() {
   }
 }
 
+void removeHooks() {
+  esp_netif_t* eth_netif = ETH.netif();
+  if (eth_netif && orig_eth_input != NULL) {
+    struct netif* lwip_eth = (struct netif*)esp_netif_get_netif_impl(eth_netif);
+    if (lwip_eth) {
+      lwip_eth->input = orig_eth_input;
+      lwip_eth->linkoutput = orig_eth_linkoutput;
+      orig_eth_input = NULL;
+      orig_eth_linkoutput = NULL;
+      logMsg(LOG_INFO, "ETH Hooks removed");
+    }
+  }
+}
+
 // Command List for Autocomplete
 const char* shell_commands[] = {
   "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "top", "ifconfig", "free", "meminfo", "arp", "dhcp", "iperf", "udp_iperf", "toe_iperf"
@@ -1609,6 +1623,14 @@ void handleShell() {
         }
         
         Serial.printf("[TOE-iPerf] Shutting down ESP_ETH (lwIP) for HW %s test...\n", cfg.is_udp ? "UDP" : "TCP");
+        
+        // [Fix] NAPT, Hooks 및 네트워크 참조 해제 후 종료 시도
+        #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+        WiFi.AP.enableNAPT(false);
+        #endif
+        removeHooks();
+        vTaskDelay(pdMS_TO_TICKS(500)); 
+
         ETH.end(); // Stop conflicting driver and release SPI bus
         
         int dash_idx = arg.indexOf('-');
@@ -1847,13 +1869,17 @@ void NetworkEvent(arduino_event_id_t event) {
            ETH.fullDuplex() ? "FULL_DUPLEX" : "HALF_DUPLEX", ETH.linkSpeed());
     eth_connected = true;
 
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    // [Optimization] 인터넷 공유가 아닌 양방향 통신 최적화를 위해 NAPT 대신 라우팅 모드 사용
+    logMsg(LOG_INFO, "L3 Routing Mode active (No NAT)");
+    /*
+    #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
     if (WiFi.AP.enableNAPT(true)) {
       logMsg(LOG_INFO, "NAPT enabled - Bridge is active");
     } else {
       logMsg(LOG_ERROR, "NAPT enable failed!");
     }
-#endif
+    #endif
+    */
     break;
 
   case ARDUINO_EVENT_ETH_DISCONNECTED:

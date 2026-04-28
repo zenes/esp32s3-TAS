@@ -478,8 +478,8 @@ bool ETHClass2::beginSPI(eth_phy_type_t type, uint8_t phy_addr, int cs, int irq,
     }
 #endif
 
-    esp_eth_mac_t *mac = NULL;
-    esp_eth_phy_t *phy = NULL;
+    _mac = NULL;
+    _phy = NULL;
 #if CONFIG_ETH_SPI_ETHERNET_W5500
     if (type == ETH_PHY_W5500) {
         eth_w5500_config_t mac_config = ETH_W5500_DEFAULT_CONFIG(spi_host, &spi_devcfg);
@@ -494,8 +494,8 @@ bool ETHClass2::beginSPI(eth_phy_type_t type, uint8_t phy_addr, int cs, int irq,
             mac_config.custom_spi_driver.write = _eth_spi_write;
         }
 #endif
-        mac = esp_eth_mac_new_w5500(&mac_config, &eth_mac_config);
-        phy = esp_eth_phy_new_w5500(&phy_config);
+        _mac = esp_eth_mac_new_w5500(&mac_config, &eth_mac_config);
+        _phy = esp_eth_phy_new_w5500(&phy_config);
     } else
 #endif
 #if CONFIG_ETH_SPI_ETHERNET_DM9051
@@ -511,8 +511,8 @@ bool ETHClass2::beginSPI(eth_phy_type_t type, uint8_t phy_addr, int cs, int irq,
                 mac_config.custom_spi_driver.write = _eth_spi_write;
             }
 #endif
-            mac = esp_eth_mac_new_dm9051(&mac_config, &eth_mac_config);
-            phy = esp_eth_phy_new_dm9051(&phy_config);
+            _mac = esp_eth_mac_new_dm9051(&mac_config, &eth_mac_config);
+            _phy = esp_eth_phy_new_dm9051(&phy_config);
         } else
 #endif
 #if CONFIG_ETH_SPI_ETHERNET_KSZ8851SNL
@@ -528,8 +528,8 @@ bool ETHClass2::beginSPI(eth_phy_type_t type, uint8_t phy_addr, int cs, int irq,
                     mac_config.custom_spi_driver.write = _eth_spi_write;
                 }
 #endif
-                mac = esp_eth_mac_new_ksz8851snl(&mac_config, &eth_mac_config);
-                phy = esp_eth_phy_new_ksz8851snl(&phy_config);
+                _mac = esp_eth_mac_new_ksz8851snl(&mac_config, &eth_mac_config);
+                _phy = esp_eth_phy_new_ksz8851snl(&phy_config);
             } else
 #endif
             {
@@ -538,7 +538,7 @@ bool ETHClass2::beginSPI(eth_phy_type_t type, uint8_t phy_addr, int cs, int irq,
             }
 
     // Init Ethernet driver to default and install it
-    esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
+    esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(_mac, _phy);
     ret = esp_eth_driver_install(&eth_config, &_eth_handle);
     if (ret != ESP_OK) {
         log_e("SPI Ethernet driver install failed: %d", ret);
@@ -592,13 +592,13 @@ bool ETHClass2::beginSPI(eth_phy_type_t type, uint8_t phy_addr, int cs, int irq,
         return false;
     }
     // Attach Ethernet driver to TCP/IP stack
-    esp_eth_netif_glue_handle_t new_netif_glue = esp_eth_new_netif_glue(_eth_handle);
-    if (new_netif_glue == NULL) {
+    _glue_handle = esp_eth_new_netif_glue(_eth_handle);
+    if (_glue_handle == NULL) {
         log_e("esp_eth_new_netif_glue failed");
         return false;
     }
 
-    ret = esp_netif_attach(_esp_netif, new_netif_glue);
+    ret = esp_netif_attach(_esp_netif, _glue_handle);
     if (ret != ESP_OK) {
         log_e("esp_netif_attach failed: %d", ret);
         return false;
@@ -671,8 +671,7 @@ void ETHClass2::end(void)
     _eth_started = false;
 
     if (_esp_netif != NULL) {
-        esp_netif_destroy(_esp_netif);
-        _esp_netif = NULL;
+        destroyNetif();
     }
 
     if (_eth_handle != NULL) {
@@ -680,11 +679,31 @@ void ETHClass2::end(void)
             log_e("Failed to stop Ethernet");
             return;
         }
+        
+        // delete glue first to drop ref_count
+        if (_glue_handle != NULL) {
+            if (esp_eth_del_netif_glue(_glue_handle) != ESP_OK) {
+                log_e("Failed to del_netif_glue Ethernet");
+            }
+            _glue_handle = NULL;
+        }
+
         if (esp_eth_driver_uninstall(_eth_handle) != ESP_OK) {
-            log_e("Failed to stop Ethernet");
+            log_e("Failed to uninstall Ethernet");
             return;
         }
         _eth_handle = NULL;
+
+        // delete mac
+        if (_mac != NULL) {
+            _mac->del(_mac);
+            _mac = NULL;
+        }
+        // delete phy
+        if (_phy != NULL) {
+            _phy->del(_phy);
+            _phy = NULL;
+        }
     }
 
 #if ETH_SPI_SUPPORTS_CUSTOM

@@ -169,6 +169,9 @@ class ETHClass2 : public NetworkInterface {
     private:
         bool _eth_started;
         esp_eth_handle_t _eth_handle;
+        esp_eth_mac_t *_mac;
+        esp_eth_phy_t *_phy;
+        esp_eth_netif_glue_handle_t _glue_handle;
         uint8_t _eth_index;
         eth_phy_type_t _phy_type;
 #if ETH_SPI_SUPPORTS_CUSTOM

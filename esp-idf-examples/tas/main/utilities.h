@@ -19,11 +19,40 @@
 // https://www.lilygo.cc/products/t-eth-lite?variant=43120880779445
 // #define LILYGO_T_ETH_LITE_ESP32S3
 #define ENABLE_ETHERNET  // Enable Ethernet Features (Default)
+//#define ENABLE_TASK_PRIORITY_TUNING // 태스크 우선순위 최적화 활성화 (main.cpp)
 //#define ENABLE_TE_SYNC     // Enable TE(Tearing Effect) Hardware Sync Mode (40Hz limit)
-#define ENABLE_GRADIENT_BG // 배경 그라데이션 활성화
-#define ENABLE_TEST_BALL     // 테스트용 노란 공 활성화
-#define ENABLE_FULL_REFRESH  // 전체 화면 갱신(Full Refresh) 활성화
+//#define ENABLE_GRADIENT_BG // 배경 그라데이션 활성화
+//#define ENABLE_TEST_BALL     // 테스트용 노란 공 활성화
+//#define ENABLE_FULL_REFRESH  // 전체 화면 갱신(Full Refresh) 활성화
 #define ENABLE_DELTATIME_ANIM // 시간 기반 애니메이션 보정 활성화
+
+/* 
+ * [Performance Optimization Guidelines]
+ * The following settings should be applied in sdkconfig.defaults for maximum stability:
+ * 
+ * 1. Network Core Affinity (Core 0):
+ *    CONFIG_LWIP_TCPIP_TASK_AFFINITY=0x0
+ *    CONFIG_ESP32_WIFI_TASK_PINNED_TO_CORE_0=y
+ * 
+ * 2. App/UI Core Affinity (Core 1):
+ *    CONFIG_ARDUINO_RUNNING_CORE=1
+ *    CONFIG_ARDUINO_EVENT_RUNNING_CORE=1
+ * 
+ * 3. TCP Performance:
+ *    CONFIG_LWIP_TCP_WND_DEFAULT=65535
+ *    CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65535
+ *    CONFIG_LWIP_IRAM_OPTIMIZATION=y
+ *    CONFIG_ESP32_WIFI_IRAM_OPT=y
+ * 
+ * 4. System Stability:
+ *    CONFIG_FREERTOS_HZ=1000
+ *    CONFIG_ARDUINO_LOOP_STACK_SIZE=16384
+ *    CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+ * 
+ * 5. Hardware (Octal PSRAM):
+ *    CONFIG_SPIRAM_MODE_OCT=y
+ *    CONFIG_SPIRAM_SPEED_80M=y
+ */
 
 // Product Link : N.A
 // #define LILYGO_T_ETH_ELITE_ESP32S3

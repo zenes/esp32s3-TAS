@@ -1607,7 +1607,7 @@ void handleShell() {
         }
         
         // Cache lwIP settings for TOE hardware to use before tearing down ETH
-        toe_iperf_cfg_t cfg;
+        toe_iperf_cfg_t cfg = {0};
         cfg.port = 5003; // Default port
         cfg.is_server = true;
         cfg.local_ip = ETH.localIP();
@@ -1662,7 +1662,7 @@ void handleShell() {
              } else {
                  Serial.println("[TOE-iPerf] Already running.");
                  // Restart ETH if failed
-                 ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 20);
+                 ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
              }
         }
       } else if (arg.equalsIgnoreCase("stop")) {
@@ -1673,7 +1673,7 @@ void handleShell() {
         toe_iperf_stop();
         Serial.println("[TOE-iPerf] Hardware Test Stopped. Restoring ESP_ETH...");
         // Restart the ESP-IDF driver to restore NAT operation
-        ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 20);
+        ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
         
 #if USE_STATIC_IP
         ETH.config(local_ip, gateway, subnet, dns1, dns2);
@@ -1712,7 +1712,7 @@ void handleShell() {
             }
         }
 
-        socket_bridge_cfg_t cfg;
+        socket_bridge_cfg_t cfg = {0};
         cfg.listen_port = listen_port;
         
         IPAddress target_ip_addr;
@@ -1737,13 +1737,13 @@ void handleShell() {
             Serial.println("[Bridge] Started.");
         } else {
             Serial.println("[Bridge] Failed.");
-            ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 20);
+            ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
         }
       } else if (arg.equalsIgnoreCase("stop")) {
         socket_bridge_stop();
         Serial.println("[Bridge] Stopped.");
         delay(500);
-        ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 20);
+        ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
       } else {
         Serial.println("Usage: bridge start <listen_port> <target_ip> <target_port>");
         Serial.println("       bridge stop");
@@ -2250,7 +2250,7 @@ void setup() {
   ETH.begin(ETH_TYPE, ETH_ADDR, ETH_MDC_PIN, ETH_MDIO_PIN, ETH_RESET_PIN, ETH_CLK_MODE);
 #else
   ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN,
-            SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, 20);
+            SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
 #endif
 
 #if USE_STATIC_IP

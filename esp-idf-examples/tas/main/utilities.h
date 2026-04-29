@@ -19,11 +19,12 @@
 // https://www.lilygo.cc/products/t-eth-lite?variant=43120880779445
 // #define LILYGO_T_ETH_LITE_ESP32S3
 #define ENABLE_ETHERNET  // Enable Ethernet Features (Default)
-//#define ENABLE_TASK_PRIORITY_TUNING // 태스크 우선순위 최적화 활성화 (main.cpp)
+#define W5500_SPI_CLOCK_MHZ 40 // W5500 SPI 통신 클럭 속도 (기본 20MHz, 최대 40MHz)
+#define ENABLE_TASK_PRIORITY_TUNING // 태스크 우선순위 최적화 활성화 (main.cpp)
 //#define ENABLE_TE_SYNC     // Enable TE(Tearing Effect) Hardware Sync Mode (40Hz limit)
-//#define ENABLE_GRADIENT_BG // 배경 그라데이션 활성화
-//#define ENABLE_TEST_BALL     // 테스트용 노란 공 활성화
-//#define ENABLE_FULL_REFRESH  // 전체 화면 갱신(Full Refresh) 활성화
+#define ENABLE_GRADIENT_BG // 배경 그라데이션 활성화
+#define ENABLE_TEST_BALL     // 테스트용 노란 공 활성화
+#define ENABLE_FULL_REFRESH  // 전체 화면 갱신(Full Refresh) 활성화
 #define ENABLE_DELTATIME_ANIM // 시간 기반 애니메이션 보정 활성화
 
 /* 

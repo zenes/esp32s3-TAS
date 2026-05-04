@@ -5,7 +5,8 @@ static SPIClass* w5500_spi = nullptr;
 
 bool w5500_hw_init() {
     if (!w5500_spi) {
-        w5500_spi = new SPIClass(FSPI); 
+        // Use HSPI (SPI3) for Ethernet to avoid conflict with LCD (SPI2/FSPI)
+        w5500_spi = new SPIClass(HSPI); 
         w5500_spi->begin(ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, -1);
         
         pinMode(ETH_CS_PIN, OUTPUT);

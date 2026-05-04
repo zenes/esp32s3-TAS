@@ -79,8 +79,8 @@ static void toe_iperf_server_task(void* pvParameters) {
                 total_bytes += read_len;
                 
                 static uint32_t last_yield_time = 0;
-                if (millis() - last_yield_time > 1000) {
-                    vTaskDelay(1); // Feed the watchdog / let IDLE task run
+                if (millis() - last_yield_time > 20) { // 20ms마다 양보하여 UI/Serial 기아 방지
+                    vTaskDelay(1); 
                     last_yield_time = millis();
                 }
                 
@@ -241,8 +241,8 @@ static void toe_iperf_client_task(void* pvParameters) {
             total_bytes += send_len;
             
             static uint32_t last_yield_time = 0;
-            if (millis() - last_yield_time > 1000) {
-                vTaskDelay(1); // Feed the watchdog / let IDLE task run
+            if (millis() - last_yield_time > 20) { // 20ms마다 양보하여 UI/Serial 기아 방지
+                vTaskDelay(1); 
                 last_yield_time = millis();
             }
         } else {

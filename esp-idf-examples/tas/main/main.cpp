@@ -1,3 +1,4 @@
+#define USE_LOVYANGFX
 /**
  * @file      tas.ino
  * @author    Lewis He (lewishe@outlook.com)
@@ -15,10 +16,37 @@
 #include "utilities.h" //Board PinMap
 #include <WiFi.h>
 //#include <ESP32Ping.h>
+#include <ETH.h>
+#include "lwip/lwip_napt.h"
+#include <WiFi.h>
+#include "driver/gpio.h"
+#include "soc/gpio_struct.h"
+#include "soc/io_mux_reg.h"
+#include "driver/spi_master.h"
+#include "esp_task_wdt.h"
+
+// Diagnostic function to dump GPIO Matrix configuration
+void gpio_dump_io_configuration(int gpio_num, const char* name) {
+    if (gpio_num < 0 || gpio_num >= GPIO_NUM_MAX) return;
+    
+    // Get Output Signal Index from GPIO Matrix
+    uint32_t out_idx = REG_GET_FIELD(GPIO_FUNC0_OUT_SEL_CFG_REG + (gpio_num * 4), GPIO_FUNC0_OUT_SEL);
+    
+    // Get Input/Output enable status
+    bool out_en = false;
+    if (gpio_num < 32) out_en = (GPIO.enable >> gpio_num) & 1;
+    else out_en = (GPIO.enable1.data >> (gpio_num - 32)) & 1;
+    
+    Serial.printf("  [GPIO %d] %-8s | Output Signal Index: %d (0x%03X) | OutEn: %d\n", 
+                  gpio_num, name, (int)out_idx, (int)out_idx, (int)out_en);
+}
 #include <SPI.h>
 #include <esp_wifi.h> // For esp_wifi_set_bandwidth
 #include <esp_system.h> // For esp_reset_reason
 #include <rom/rtc.h>    // For rtc_get_reset_reason
+
+static SPIClass* spi_p = nullptr;
+
 #ifdef USE_LOVYANGFX
 #include "LGFX_Config.hpp"
 #else
@@ -792,6 +820,9 @@ static bool ap_started = false;
  * @brief Dynamic LCD hardware detection
  * @return true if LCD is detected, false otherwise
  */
+#ifdef USE_LOVYANGFX
+bool detectLCD() { return true; }
+#else
 bool detectLCD() {
 #if defined(ESP32_S3_LCD_EV_BOARD_2) || defined(TFT_PARALLEL_16_BIT) || defined(TFT_PARALLEL_8_BIT)
   Serial.println("Board/Parallel Mode Detected. Skipping SPI probing.");
@@ -799,8 +830,7 @@ bool detectLCD() {
 #else
   Serial.print("Probing LCD hardware... ");
   
-  // Use SPI2 (FSPI) to avoid conflict with Ethernet (SPI3) on some boards
-  static SPIClass* spi_p = nullptr;
+  // Use global SPI2 (FSPI) instance
   if (!spi_p) spi_p = new SPIClass(FSPI); 
 
 #if defined(TFT_SCLK) && defined(TFT_MISO) && defined(TFT_MOSI) && defined(TFT_CS)
@@ -822,36 +852,75 @@ bool detectLCD() {
 
   // Hardware Reset
   digitalWrite(TFT_RST, LOW);
-  delay(100); 
-  digitalWrite(TFT_RST, HIGH);
+  delay(200); 
+  digitalWrite(LCD_RST_PIN, HIGH);
   delay(200); 
   
-  digitalWrite(TFT_CS, LOW);
+  digitalWrite(LCD_CS_PIN, LOW);
   delay(5); 
   
-  spi_p->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  spi_p->beginTransaction(SPISettings(500000, MSBFIRST, SPI_MODE0));
   
-  // Multiple ID probe (ST7789 requires 1-byte dummy before parameter)
-  auto readID = [&](uint8_t cmd) {
+  Serial.printf("  [SPI] Pins: SCLK:%d, MISO:%d, MOSI:%d, CS:%d, DC:%d\n", 
+                TFT_SCLK, (int)TFT_MISO, TFT_MOSI, TFT_CS, LCD_DC_PIN);
+
+  // Method 1: With 1-byte dummy (Standard for ST7789 ID)
+  auto readWithDummy = [&](uint8_t cmd) {
     digitalWrite(LCD_DC_PIN, LOW); spi_p->transfer(cmd);
     digitalWrite(LCD_DC_PIN, HIGH);
     spi_p->transfer(0x00); // Dummy Byte
-    return spi_p->transfer(0x00); // Real ID
+    return (uint8_t)spi_p->transfer(0x00);
   };
 
-  uint8_t id1 = readID(0xDA);
-  uint8_t id2 = readID(0xDB);
-  uint8_t id3 = readID(0xDC);
+  // Method 2: No dummy (Some registers like 0x0A)
+  auto readNoDummy = [&](uint8_t cmd) {
+    digitalWrite(LCD_DC_PIN, LOW); spi_p->transfer(cmd);
+    digitalWrite(LCD_DC_PIN, HIGH);
+    return (uint8_t)spi_p->transfer(0x00);
+  };
+
+  uint8_t id1 = readWithDummy(0xDA);
+  uint8_t id2 = readWithDummy(0xDB);
+  uint8_t id3 = readWithDummy(0xDC);
+  uint8_t pwr_nodummy = readNoDummy(0x0A);
+  uint8_t mad_nodummy = readNoDummy(0x0B);
   
+  // Test Mode: Read additional registers for diagnostics
+  auto readRegWithDummy = [&](uint8_t cmd, int bytes) {
+    digitalWrite(LCD_DC_PIN, LOW); spi_p->transfer(cmd);
+    digitalWrite(LCD_DC_PIN, HIGH);
+    spi_p->transfer(0x00); // Dummy Byte
+    uint32_t val = 0;
+    for(int i=0; i<bytes; i++) {
+        val = (val << 8) | spi_p->transfer(0x00);
+    }
+    return val;
+  };
+
+  uint32_t status = readRegWithDummy(0x09, 4); // Display Status
+  uint8_t pwr_dummy = readRegWithDummy(0x0A, 1); // Power Mode
+  uint8_t mad_dummy = readRegWithDummy(0x0B, 1); // MADCTL
+  uint8_t pixfmt = readRegWithDummy(0x0C, 1); // Pixel Format
+
   spi_p->endTransaction();
+  spi_p->end(); // Release SPI resource to avoid duplicate callback error
   digitalWrite(LCD_CS_PIN, HIGH);
   
+  Serial.printf("--- LCD Register Diagnostics ---\n");
+  Serial.printf("  ID (DA/DB/DC): %02X %02X %02X (With Dummy)\n", id1, id2, id3);
+  Serial.printf("  Power (0Ah)   : NoDummy:%02X, WithDummy:%02X\n", pwr_nodummy, pwr_dummy);
+  Serial.printf("  MADCTL(0Bh)   : NoDummy:%02X, WithDummy:%02X\n", mad_nodummy, mad_dummy);
+  Serial.printf("  Status (09h)  : %08X (With Dummy)\n", status);
+  Serial.printf("  PixFmt (0Ch)  : %02X (With Dummy)\n", pixfmt);
+  Serial.printf("--------------------------------\n");
+
   bool detected = (id1 != 0x00 && id1 != 0xFF) || (id2 != 0x00 && id2 != 0xFF) || (id3 != 0x00 && id3 != 0xFF);
 
   if (detected) {
-    Serial.printf("Done. LCD Detected (ID:%02X%02X%02X)\n", id1, id2, id3);
+    Serial.printf("Done. LCD Detected.\n");
   } else {
-    Serial.println("Failed. LCD not found.");
+    Serial.println("Failed. LCD not found. -> Force initializing for LilyGO-LCD1");
+    detected = true;
   }
   #ifdef LCD_TYPE_ILI9341
   detected = true;
@@ -861,6 +930,7 @@ bool detectLCD() {
   return detected;
 #endif
 }
+#endif
 
 /**
  * @brief Initialize LVGL UI widgets
@@ -1624,13 +1694,15 @@ void handleShell() {
         
         Serial.printf("[TOE-iPerf] Shutting down ESP_ETH (lwIP) for HW %s test...\n", cfg.is_udp ? "UDP" : "TCP");
         
-        // [Fix] NAPT, Hooks 및 네트워크 참조 해제 후 종료 시도
-        #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-        WiFi.AP.enableNAPT(false);
+        // [Fix] NAPT, Hooks 및 네트워크 참조를 확실히 해제하여 LoadProhibited 패닉 방지
+        
+        // 모든 인터페이스의 NAPT 비활성화 시도
+        #if defined(ip_napt_enable) || defined(CONFIG_LWIP_IP4_NAPT)
+        ip_napt_enable(0, 0); 
         #endif
+        
         removeHooks();
-        vTaskDelay(pdMS_TO_TICKS(500)); 
-
+        vTaskDelay(pdMS_TO_TICKS(1000)); // lwIP 스택이 패킷 처리를 마무리할 충분한 시간 부여 (500 -> 1000)
         ETH.end(); // Stop conflicting driver and release SPI bus
         
         int dash_idx = arg.indexOf('-');
@@ -1662,7 +1734,7 @@ void handleShell() {
              } else {
                  Serial.println("[TOE-iPerf] Already running.");
                  // Restart ETH if failed
-                 ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
+                 ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
              }
         }
       } else if (arg.equalsIgnoreCase("stop")) {
@@ -1673,7 +1745,7 @@ void handleShell() {
         toe_iperf_stop();
         Serial.println("[TOE-iPerf] Hardware Test Stopped. Restoring ESP_ETH...");
         // Restart the ESP-IDF driver to restore NAT operation
-        ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
+        ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
         
 #if USE_STATIC_IP
         ETH.config(local_ip, gateway, subnet, dns1, dns2);
@@ -1737,13 +1809,13 @@ void handleShell() {
             Serial.println("[Bridge] Started.");
         } else {
             Serial.println("[Bridge] Failed.");
-            ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
+            ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
         }
       } else if (arg.equalsIgnoreCase("stop")) {
         socket_bridge_stop();
         Serial.println("[Bridge] Stopped.");
         delay(500);
-        ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
+        ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN, SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
       } else {
         Serial.println("Usage: bridge start <listen_port> <target_ip> <target_port>");
         Serial.println("       bridge stop");
@@ -2049,22 +2121,16 @@ void setup() {
     Serial.printf("  [DIAG] TFT_eSPI Instance: %p\n", tft);
 #endif
 
-  lcd_detected = detectLCD();
+  // 진단을 위해 SPI를 미리 열면 TFT_eSPI 라이브러리와 충돌하므로 주석 처리 (순정 아두이노 방식 유지)
+  // lcd_detected = detectLCD();
+  lcd_detected = true;
+  
   if (lcd_detected) {
     Serial.println("\r\n--- LCD Control Pin Configuration ---");
 #ifdef USE_LOVYANGFX
-    #if defined(LGFX_WR)
-    Serial.printf("  LGFX_WR  : GPIO %d\n", LGFX_WR);
-    #endif
-    Serial.printf("  LGFX_DC  : GPIO %d\n", LGFX_DC);
-    #if defined(LGFX_CS) && LGFX_CS >= 0
-    Serial.printf("  LGFX_CS  : GPIO %d\n", LGFX_CS);
-    #else
-    Serial.println("  LGFX_CS  : DISABLED (-1)");
-    #endif
-    #if defined(LGFX_RST) && LGFX_RST >= 0
-    Serial.printf("  LGFX_RST : GPIO %d\n", LGFX_RST);
-    #endif
+    Serial.printf("  LCD_DC   : GPIO %d\n", LCD_DC_PIN);
+    Serial.printf("  LCD_CS   : GPIO %d\n", LCD_CS_PIN);
+    Serial.printf("  LCD_RST  : GPIO %d\n", LCD_RST_PIN);
 #else
     #if defined(TFT_WR)
     Serial.printf("  TFT_WR  : GPIO %d\n", TFT_WR);
@@ -2081,22 +2147,17 @@ void setup() {
 #endif
     Serial.println("-------------------------------------\n");
 
-#if defined(TFT_BL) && TFT_BL >= 0
-    pinMode(LCD_BL_PIN, OUTPUT);
-    digitalWrite(LCD_BL_PIN, HIGH); // Turn on backlight
-#endif
-    Serial.println("Done.");
+    // Backlight is hardware-wired to VCC, no software control needed.
+    Serial.println("Backlight: Hardware VCC (Skip Init).");
 
 #ifdef USE_LOVYANGFX
-    #if defined(LGFX_RST) && LGFX_RST >= 0
-    Serial.printf("Step 5: Resetting LCD (LGFX_RST GPIO %d)... ", LGFX_RST);
-    pinMode(LGFX_RST, OUTPUT);
-    digitalWrite(LGFX_RST, LOW);
+    Serial.printf("Step 5: Resetting LCD (LCD_RST_PIN GPIO %d)... ", LCD_RST_PIN);
+    pinMode(LCD_RST_PIN, OUTPUT);
+    digitalWrite(LCD_RST_PIN, LOW);
     delay(100);
-    digitalWrite(LGFX_RST, HIGH);
+    digitalWrite(LCD_RST_PIN, HIGH);
     delay(150);
     Serial.println("Done.");
-    #endif
 #else
     #if defined(TFT_RST) && TFT_RST >= 0
     Serial.printf("Step 5: Resetting LCD (TFT_RST GPIO %d)... ", TFT_RST);
@@ -2111,13 +2172,13 @@ void setup() {
 
     tft->init();
     tft->setSwapBytes(false); // LVGL handles swapping now (Efficiency)
-    tft->setRotation(1); // Landscape (Move forward to ensure correct windowing)
+    tft->setRotation(0); // Try Rotation 0 for Native Landscape
 
 #ifdef USE_LOVYANGFX
     Serial.printf("  [DIAG] LCD Panel (LovyanGFX Mode)\n");
 #else
-    // TFT_eSPI: readID() 미지원 버전의 경우 readcommand8(0x04)로 대체
-    Serial.printf("  [DIAG] LCD Panel ID: 0x%02X\n", (uint32_t)tft->readcommand8(0x04));
+    // TFT_eSPI: MISO 미연결 시 hang 방지를 위해 읽기 진단 비활성화
+    Serial.println("  [DIAG] LCD Panel ID: Skip (Force Mode)");
 #endif
 
 #ifdef ENABLE_TE_SYNC
@@ -2126,9 +2187,9 @@ void setup() {
     // Fast Mode: TE 미사용 및 패널 하드웨어 기본값(보통 60Hz) 그대로 작동하도록 방치
     Serial.println("ST7789 TE Sync Disabled (Fast Mode - Default Hardware Refresh Rate)");
     
-#ifndef USE_LOVYANGFX
-    tft->initDMA(); // Start GDMA for SPI
-#endif
+    // 3. Initialize LCD using LovyanGFX (LGFX)
+    // LovyanGFX handles pin mapping and DMA setup automatically for ESP32-S3
+    // Note: tft->init() was already called above at line 2176.
 #endif
 
     /* Initialize LVGL and Allocate DMA Buffers in Internal SRAM */
@@ -2231,9 +2292,10 @@ void setup() {
 
     // (cpuStats.begin()은 WiFi 시작 전에 이미 호출됨)
 
-    Serial.print("Step 7: LVGL UI creation... ");
+    logMsg(LOG_INFO, "Step 7: LVGL UI creation... Done.");
     initLVGLUI();
     updateLCD();
+
     Serial.println("Done.");
   } else {
     Serial.println("Step 5-7: LCD Hardware not found. Skipping.");
@@ -2250,7 +2312,7 @@ void setup() {
   ETH.begin(ETH_TYPE, ETH_ADDR, ETH_MDC_PIN, ETH_MDIO_PIN, ETH_RESET_PIN, ETH_CLK_MODE);
 #else
   ETH.begin(ETH_PHY_W5500, ETH_ADDR, ETH_CS_PIN, ETH_INT_PIN, ETH_RST_PIN,
-            SPI2_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
+            SPI3_HOST, ETH_SCLK_PIN, ETH_MISO_PIN, ETH_MOSI_PIN, W5500_SPI_CLOCK_MHZ);
 #endif
 
 #if USE_STATIC_IP

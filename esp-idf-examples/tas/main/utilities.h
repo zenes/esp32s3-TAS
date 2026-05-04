@@ -17,7 +17,7 @@
 
 // Product Link :
 // https://www.lilygo.cc/products/t-eth-lite?variant=43120880779445
-// #define LILYGO_T_ETH_LITE_ESP32S3
+// #define LILYGO_T_ETH_LIT치E_ESP32S3
 #define ENABLE_ETHERNET  // Enable Ethernet Features (Default)
 #define W5500_SPI_CLOCK_MHZ 40 // W5500 SPI 통신 클럭 속도 (기본 20MHz, 최대 40MHz)
 #define ENABLE_TASK_PRIORITY_TUNING // 태스크 우선순위 최적화 활성화 (main.cpp)

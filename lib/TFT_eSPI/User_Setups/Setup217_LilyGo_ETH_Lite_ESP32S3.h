@@ -105,6 +105,6 @@
 // ============================================================
 #if defined(LCD_INTERFACE_SPI)
   // #define SOFT_SPI            // 하드웨어 모드로 복구
-  // #define SPI_FREQUENCY       20000000  // 20MHz - 하드웨어 최적 속도
+  #define SPI_FREQUENCY       40000000  // 40MHz - 하드웨어 최적 속도
   #define SPI_READ_FREQUENCY  5000000
 #endif

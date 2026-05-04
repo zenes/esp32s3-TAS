@@ -1,3 +1,4 @@
+#include <Arduino.h>
 /**
  * @file      tas.ino
  * @author    Lewis He (lewishe@outlook.com)
@@ -9,7 +10,7 @@
  *            This example bridges Ethernet to WiFi AP using NAPT
  */
 
-#include <Arduino.h>
+#include <../lvgl/lvgl.h>    // Force real LVGL instead of LovyanGFX shim
 #if ESP_ARDUINO_VERSION < ESP_ARDUINO_VERSION_VAL(3, 0, 0)
 #include <ETHClass2.h> //Is to use the modified ETHClass
 #define ETH ETH2
@@ -24,11 +25,12 @@
 #include <esp_system.h> // For esp_reset_reason
 #include <rom/rtc.h>    // For rtc_get_reset_reason
 #ifdef USE_LOVYANGFX
+#define M5GFX_USING_REAL_LVGL  // Prevent LovyanGFX from defining conflicting types
 #include "LGFX_Config.hpp"
 #else
 #include <TFT_eSPI.h> // LCD Library
 #endif
-#include <lvgl.h>    // LVGL Graphic Library
+
 #ifdef ENABLE_TOUCH
 #ifdef LCD_TYPE_ILI9341
 #include <XPT2046_Touchscreen.h> // XPT2046 Touch Library
@@ -386,6 +388,20 @@ void installHooks() {
       lwip_ap->input = ap_input_hook;
       lwip_ap->linkoutput = ap_linkoutput_hook;
       logMsg(LOG_INFO, "AP Hooks installed (Handle: %p, netif: %p)", ap_netif, lwip_ap);
+    }
+  }
+}
+
+void removeHooks() {
+  esp_netif_t* eth_netif = ETH.netif();
+  if (eth_netif && orig_eth_input != NULL) {
+    struct netif* lwip_eth = (struct netif*)esp_netif_get_netif_impl(eth_netif);
+    if (lwip_eth) {
+      lwip_eth->input = orig_eth_input;
+      lwip_eth->linkoutput = orig_eth_linkoutput;
+      orig_eth_input = NULL;
+      orig_eth_linkoutput = NULL;
+      logMsg(LOG_INFO, "ETH Hooks removed");
     }
   }
 }
@@ -1476,6 +1492,8 @@ void handleShell() {
         
         // Cache lwIP settings for TOE hardware to use before tearing down ETH
         toe_iperf_cfg_t cfg;
+        memset(&cfg, 0, sizeof(toe_iperf_cfg_t)); // Explicit zero-initialization
+        
         cfg.port = 5003; // Default port
         cfg.is_server = true;
         cfg.local_ip = ETH.localIP();
@@ -1483,6 +1501,11 @@ void handleShell() {
         cfg.subnet = ETH.subnetMask();
         esp_read_mac(cfg.mac_addr, ESP_MAC_ETH);
         
+        if (cfg.local_ip == 0) {
+            logMsg(LOG_ERROR, "Ethernet has no IP. Cannot start TOE test.");
+            return;
+        }
+
         cfg.is_udp = false;
         if (arg.indexOf("-u") != -1) {
              cfg.is_udp = true;
@@ -1491,6 +1514,30 @@ void handleShell() {
         }
         
         Serial.printf("[TOE-iPerf] Shutting down ESP_ETH (lwIP) for HW %s test...\n", cfg.is_udp ? "UDP" : "TCP");
+
+        // [Fix] Stop all conflicting lwIP services before tearing down the interface
+        if (lwiperf_session != NULL) {
+            lwiperf_abort(lwiperf_session);
+            lwiperf_session = NULL;
+            logMsg(LOG_INFO, "Active lwIP iPerf aborted");
+        }
+        if (socket_bridge_is_running()) {
+            socket_bridge_stop();
+            logMsg(LOG_INFO, "Socket Bridge stopped");
+        }
+#ifdef ENABLE_ETHERNET
+        if (udp_iperf_running) {
+            udp_iperf_server.close();
+            udp_iperf_running = false;
+            logMsg(LOG_INFO, "UDP iPerf server stopped");
+        }
+#endif
+
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+        WiFi.AP.enableNAPT(false);
+#endif
+        removeHooks();
+        vTaskDelay(pdMS_TO_TICKS(500)); 
         ETH.end(); // Stop conflicting driver and release SPI bus
         
         int dash_idx = arg.indexOf('-');

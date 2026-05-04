@@ -301,7 +301,7 @@ bool toe_iperf_start(const toe_iperf_cfg_t* cfg) {
     if(!toe_iperf_init(cfg)) return false;
     
     // Copy cfg since it may be stack allocated by the caller
-    toe_iperf_cfg_t* cfg_copy = (toe_iperf_cfg_t*)malloc(sizeof(toe_iperf_cfg_t));
+    toe_iperf_cfg_t* cfg_copy = (toe_iperf_cfg_t*)calloc(1, sizeof(toe_iperf_cfg_t));
     if(!cfg_copy) return false;
     memcpy(cfg_copy, cfg, sizeof(toe_iperf_cfg_t));
     

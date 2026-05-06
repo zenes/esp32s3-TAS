@@ -144,6 +144,9 @@ static SPIClass* spi_p = nullptr;
 #include "toe_iperf.h"
 #include "socket_bridge.h"
 #include "w5500_base.h"
+#ifdef ENABLE_AUDIO
+#include "audio_output.h"
+#endif
 #include "soc/gpio_struct.h"
 #include "driver/gpio.h"
 #include "soc/io_mux_reg.h"
@@ -430,7 +433,7 @@ void removeHooks() {
 
 // Command List for Autocomplete
 const char* shell_commands[] = {
-  "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "top", "ifconfig", "free", "meminfo", "arp", "dhcp", "iperf", "udp_iperf", "toe_iperf"
+  "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "top", "ifconfig", "free", "meminfo", "arp", "dhcp", "iperf", "udp_iperf", "toe_iperf", "audio"
 };
 
 const int shell_cmd_count = sizeof(shell_commands) / sizeof(shell_commands[0]);
@@ -1366,6 +1369,9 @@ void handleShell() {
       Serial.print("  udp_iperf <start|stop>- Start/stop UDP Speed Test (Port 5002)\r\n");
       Serial.print("  toe_iperf <start|stop> [-s | -c ip] - Start/stop W5500 TOE Speed Test\r\n");
 #endif
+#ifdef ENABLE_AUDIO
+      Serial.print("  audio <start|stop|volume 0-100> - Control I2S Sine Wave Output\r\n");
+#endif
       Serial.print("\r\n");
     } 
     else if (cmd.equalsIgnoreCase("status")) {
@@ -1904,6 +1910,26 @@ void handleShell() {
         Serial.println("[ERROR] ps: malloc failed.\r\n");
       }
     }
+#ifdef ENABLE_AUDIO
+    else if (cmd.equalsIgnoreCase("audio")) {
+      if (arg.equalsIgnoreCase("start")) {
+        audio_output_start();
+      } else if (arg.equalsIgnoreCase("stop")) {
+        audio_output_stop();
+      } else if (arg.startsWith("volume")) {
+        int space_idx = arg.indexOf(' ');
+        if (space_idx != -1) {
+            int vol = arg.substring(space_idx + 1).toInt();
+            audio_output_set_volume(vol);
+        } else {
+            Serial.println("Usage: audio volume <0-100>");
+        }
+      } else {
+        Serial.println("Usage: audio <start|stop|volume 0-100>");
+      }
+    }
+#endif
+
     else {
       Serial.printf("Unknown command: %s. Type 'help' for list.\r\n", cmd.c_str());
     }
@@ -2128,9 +2154,15 @@ void setup() {
   if (lcd_detected) {
     Serial.println("\r\n--- LCD Control Pin Configuration ---");
 #ifdef USE_LOVYANGFX
-    Serial.printf("  LCD_DC   : GPIO %d\n", LCD_DC_PIN);
-    Serial.printf("  LCD_CS   : GPIO %d\n", LCD_CS_PIN);
-    Serial.printf("  LCD_RST  : GPIO %d\n", LCD_RST_PIN);
+    #ifdef LGFX_DC
+    Serial.printf("  LCD_DC   : GPIO %d\n", LGFX_DC);
+    #endif
+    #ifdef LGFX_CS
+    Serial.printf("  LCD_CS   : GPIO %d\n", LGFX_CS);
+    #endif
+    #ifdef LGFX_RST
+    Serial.printf("  LCD_RST  : GPIO %d\n", LGFX_RST);
+    #endif
 #else
     #if defined(TFT_WR)
     Serial.printf("  TFT_WR  : GPIO %d\n", TFT_WR);
@@ -2151,13 +2183,15 @@ void setup() {
     Serial.println("Backlight: Hardware VCC (Skip Init).");
 
 #ifdef USE_LOVYANGFX
-    Serial.printf("Step 5: Resetting LCD (LCD_RST_PIN GPIO %d)... ", LCD_RST_PIN);
-    pinMode(LCD_RST_PIN, OUTPUT);
-    digitalWrite(LCD_RST_PIN, LOW);
+    #ifdef LGFX_RST
+    Serial.printf("Step 5: Resetting LCD (LGFX_RST GPIO %d)... ", LGFX_RST);
+    pinMode(LGFX_RST, OUTPUT);
+    digitalWrite(LGFX_RST, LOW);
     delay(100);
-    digitalWrite(LCD_RST_PIN, HIGH);
+    digitalWrite(LGFX_RST, HIGH);
     delay(150);
     Serial.println("Done.");
+    #endif
 #else
     #if defined(TFT_RST) && TFT_RST >= 0
     Serial.printf("Step 5: Resetting LCD (TFT_RST GPIO %d)... ", TFT_RST);

@@ -51,6 +51,7 @@ idf_component_register(SRCS "main.cpp"
                             "socket_bridge.cpp"
                             "toe_iperf.cpp"
                             "w5500_base.cpp"
+                            "audio_output.cpp"
                             "lwiperf.c"
                     INCLUDE_DIRS "."
                     REQUIRES ${COMP_REQUIRES})

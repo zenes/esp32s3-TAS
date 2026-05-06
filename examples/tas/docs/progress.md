@@ -1,5 +1,14 @@
 # 프로젝트 진행 상황
 
+## 2026-05-06
+### 오디오(I2S) 사이렌 출력 구현 및 태스크 안정화
+*   **오디오 인터페이스 구현**: `audio_output.cpp` 모듈을 신규 추가하여 ES8311 I2C 코덱 제어 및 I2S 통신을 통한 오디오 출력 기능(사이렌 스윕 주파수) 구현 완료.
+*   **셸 제어 연동**: `main.cpp`의 셸 인터페이스에 `audio <start|stop|volume>` 명령어를 추가하여 런타임 제어 편의성 확보.
+*   **오디오 태스크 최적화 (WDT 해결)**: `audio_sine_task` 내의 무거운 `double` 부동소수점 연산을 하드웨어 FPU가 가속하는 `float` 및 `sinf`로 전환하여 CPU 과부하(WDT Timeout) 현상 방지 및 성능 확보.
+*   **태스크 데드락(멈춤) 방지**: `audio stop` 명령 실행 시 태스크를 강제 종료(`vTaskDelete`)하여 발생하는 I2S 드라이버 멈춤 현상을 `audio_running` 플래그 기반 자진 종료 로직으로 개선.
+*   **이더넷 하드웨어 환경 분리**: W5500 칩이 없는 EV-BOARD-2 보드 환경에서 초기화 시도 시 발생하는 SPI 타임아웃 및 드라이버 패닉(Spinlock Deadlock) 원인을 규명하고, `ENABLE_ETHERNET` 매크로를 분리하여 격리 테스트 환경 구축.
+*   **LCD 버그 수정**: `main.cpp` 내 LovyanGFX 초기화 로직의 `LCD_RST_PIN` 매크로 참조 오류를 `LGFX_RST`로 픽스.
+
 ## 2026-04-15
 ### CPU 부하 모니터링 시스템 완성 (UI 통합 + 직렬 모니터 개선)
 

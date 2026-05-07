@@ -151,6 +151,9 @@ static SPIClass* spi_p = nullptr;
 #include "driver/gpio.h"
 #include "soc/io_mux_reg.h"
 #include "cpu_stats.h"
+#include "file_manager.h"
+#include "usb_msc.h"
+#include "audio_player.h"
 
 
 // Global Traffic Stats
@@ -179,6 +182,34 @@ static DmesgEntry dmesg_buffer[DMESG_MAX_LINES];
 static int dmesg_head = 0;
 static int dmesg_tail = 0;
 static int dmesg_count = 0;
+
+#include <dirent.h>
+#include <sys/stat.h>
+
+void list_files(const char *path) {
+    DIR *dir = opendir(path);
+    if (!dir) {
+        Serial.printf("[ERROR] Failed to open directory: %s\n", path);
+        return;
+    }
+
+    Serial.printf("\n--- File List: %s ---\n", path);
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        struct stat st;
+        char full_path[256];
+        snprintf(full_path, sizeof(full_path), "%s/%s", path, ent->d_name);
+        stat(full_path, &st);
+        
+        if (ent->d_type == DT_DIR) {
+            Serial.printf("[DIR ] %-20s\n", ent->d_name);
+        } else {
+            Serial.printf("[FILE] %-20s  (%ld bytes)\n", ent->d_name, (long)st.st_size);
+        }
+    }
+    Serial.println("----------------------------\n");
+    closedir(dir);
+}
 
 void addDmesg(LogLevel level, const char* msg) {
     dmesg_buffer[dmesg_head].timestamp = millis();
@@ -433,7 +464,7 @@ void removeHooks() {
 
 // Command List for Autocomplete
 const char* shell_commands[] = {
-  "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "top", "ifconfig", "free", "meminfo", "arp", "dhcp", "iperf", "udp_iperf", "toe_iperf", "audio"
+  "help", "status", "dmesg", "loglevel", "monitor", "restart", "set_ssid", "set_pw", "stats", "traffic", "ping", "top", "ifconfig", "free", "meminfo", "arp", "dhcp", "iperf", "udp_iperf", "toe_iperf", "audio", "ls", "mount", "umount"
 };
 
 const int shell_cmd_count = sizeof(shell_commands) / sizeof(shell_commands[0]);
@@ -1403,6 +1434,15 @@ void handleShell() {
       // Also show the detailed map for completeness
       printMemoryMap();
     }
+    else if (cmd.equalsIgnoreCase("ls")) {
+      list_files("/fatfs");
+    }
+    else if (cmd.equalsIgnoreCase("mount")) {
+      mount_file_system();
+    }
+    else if (cmd.equalsIgnoreCase("umount")) {
+      unmount_file_system();
+    }
     else if (cmd.equalsIgnoreCase("free") || cmd.equalsIgnoreCase("meminfo")) {
       printMemoryMap();
     }
@@ -1924,8 +1964,20 @@ void handleShell() {
         } else {
             Serial.println("Usage: audio volume <0-100>");
         }
+      } else if (arg.startsWith("play")) {
+        int space_idx = arg.indexOf(' ');
+        if (space_idx != -1) {
+            String filename = arg.substring(space_idx + 1);
+            audio_player_play(filename.c_str());
+            Serial.printf("Playing: %s\n", filename.c_str());
+        } else {
+            Serial.println("Usage: audio play <filename>");
+        }
+      } else if (arg.equalsIgnoreCase("sine")) {
+        audio_output_play_sine();
+        Serial.println("Playing test sine wave...");
       } else {
-        Serial.println("Usage: audio <start|stop|volume 0-100>");
+        Serial.println("Usage: audio <start|stop|volume|play|sine>");
       }
     }
 #endif
@@ -2052,6 +2104,14 @@ void setup() {
 #endif
 
     Serial.begin(115200);
+#ifdef ENABLE_FILE_PLAYER
+    init_file_system();
+#endif
+#ifdef ENABLE_USB_MSC
+    init_usb_msc();
+#endif
+
+    audio_player_init();
     delay(500);
 
     printMemoryMap();

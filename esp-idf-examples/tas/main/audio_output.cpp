@@ -178,9 +178,26 @@ void audio_output_start(void) {
         ESP_LOGI(TAG, "I2S Channel Enabled");
     }
 
-    // 5. Start Sine Wave Task
+    // 5. Start Sine Wave Task (Optional - for test)
+    // audio_running = true;
+    // xTaskCreate(audio_sine_task, "audio_sine", 4096, NULL, 5, &audio_task_handle);
+}
+
+void audio_output_play_sine(void) {
+    if (audio_task_handle != NULL) return;
     audio_running = true;
     xTaskCreate(audio_sine_task, "audio_sine", 4096, NULL, 5, &audio_task_handle);
+}
+
+size_t audio_output_write(const uint8_t *data, size_t len) {
+    if (tx_chan == NULL) return 0;
+    
+    size_t bytes_written = 0;
+    esp_err_t err = i2s_channel_write(tx_chan, data, len, &bytes_written, portMAX_DELAY);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "I2S Write error: %d", err);
+    }
+    return bytes_written;
 }
 
 void audio_output_stop(void) {

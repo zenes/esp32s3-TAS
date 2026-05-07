@@ -27,6 +27,8 @@
 #define ENABLE_FULL_REFRESH  // 전체 화면 갱신(Full Refresh) 활성화
 #define ENABLE_DELTATIME_ANIM // 시간 기반 애니메이션 보정 활성화
 #define ENABLE_AUDIO         // I2S 오디오 출력 기능 활성화 (EV 보드 전용)
+#define ENABLE_USB_MSC       // USB 이동식 디스크(Mass Storage Class) 활성화
+#define ENABLE_FILE_PLAYER   // 파일 시스템 기반 오디오 재생 기능 활성화
 
 /* 
  * [Performance Optimization Guidelines]

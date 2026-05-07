@@ -7,7 +7,7 @@ message(STATUS "Selected Build Environment: ${ENV}")
 # Default definitions
 set(EXTRA_DEFS "")
 # Unconditionally include all libraries to prevent include path issues during ESP-IDF multi-pass configuration
-set(COMP_REQUIRES "TFT_eSPI" "lovyan_gfx" "arduino" "lvgl" "esp_eth" "ETHClass2")
+set(COMP_REQUIRES "TFT_eSPI" "lovyan_gfx" "arduino" "lvgl" "esp_eth" "ETHClass2" "fatfs" "wear_levelling" "esp_tinyusb")
 
 if("${ENV}" STREQUAL "lilygo-lcd1")
     list(APPEND EXTRA_DEFS LILYGO_T_ETH_LITE_ESP32S3=1 LCD_TYPE_ST7789=1 ENABLE_LCD=1)
@@ -52,6 +52,9 @@ idf_component_register(SRCS "main.cpp"
                             "toe_iperf.cpp"
                             "w5500_base.cpp"
                             "audio_output.cpp"
+                            "file_manager.cpp"
+                            "usb_msc.cpp"
+                            "audio_player.cpp"
                             "lwiperf.c"
                     INCLUDE_DIRS "."
                     REQUIRES ${COMP_REQUIRES})
